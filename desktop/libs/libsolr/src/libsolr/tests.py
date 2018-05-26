@@ -22,7 +22,7 @@ from nose.plugins.skip import SkipTest
 from nose.tools import assert_equal, assert_true
 
 from django.contrib.auth.models import User
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from hadoop.pseudo_hdfs4 import is_live_cluster
 from desktop.lib.django_test_util import make_logged_in_client
@@ -38,7 +38,9 @@ try:
   # App can be blacklisted
   from search.conf import SOLR_URL
   from search.models import Collection2
+  search_enabled = True
 except:
+  search_enabled = False
   LOG.exception('Testing libsolr requires the search app to not be blacklisted')
 
 
@@ -47,7 +49,7 @@ class TestLibSolrWithSolr:
   @classmethod
   def setup_class(cls):
 
-    if not is_live_cluster():
+    if not is_live_cluster() or not search_enabled:
       raise SkipTest
 
     cls.client = make_logged_in_client(username='test', is_superuser=False)

@@ -22,6 +22,7 @@ import sys
 import time
 
 from django import forms
+from django.core.paginator import Paginator, EmptyPage, InvalidPage
 from django.contrib import messages
 from django.contrib.auth.models import User
 from django.db.models import Q
@@ -29,17 +30,19 @@ from django.http import HttpResponse, QueryDict
 from django.shortcuts import redirect
 from django.utils.html import escape
 from django.utils.translation import ugettext as _
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from desktop.appmanager import get_apps_dict
+from desktop.conf import ENABLE_DOWNLOAD, REDIRECT_WHITELIST
 from desktop.context_processors import get_app_name
-from desktop.lib.paginator import Paginator
+
 from desktop.lib.django_util import JsonResponse
 from desktop.lib.django_util import copy_query_dict, format_preserving_redirect, render
 from desktop.lib.django_util import login_notrequired, get_desktop_uri_prefix
 from desktop.lib.exceptions_renderable import PopupException
 from desktop.models import Document
 from desktop.lib.parameterization import find_variables
+from desktop.views import serve_403_error
 from notebook.models import escape_rows
 
 import beeswax.forms
@@ -57,6 +60,7 @@ LOG = logging.getLogger(__name__)
 # For scraping Job IDs from logs
 HADOOP_JOBS_RE = re.compile("Starting Job = ([a-z0-9_]+?),")
 SPARK_APPLICATION_RE = re.compile("Running with YARN Application = (?P<application_id>application_\d+_\d+)")
+TEZ_APPLICATION_RE = re.compile("Executing on YARN cluster with App id ([a-z0-9_]+?)\)")
 
 
 def index(request):
@@ -226,14 +230,18 @@ def list_designs(request):
   if search_filter is not None:
     querydict_query[ prefix + 'text' ] = search_filter
 
-  page, filter_params = _list_designs(request.user, querydict_query, DEFAULT_PAGE_SIZE, prefix)
+  paginator, page, filter_params = _list_designs(request.user, querydict_query, DEFAULT_PAGE_SIZE, prefix)
+  designs_json = []
+  if page:
+    designs_json = [query.id for query in page.object_list]
 
   return render('list_designs.mako', request, {
     'page': page,
+    'paginator': paginator,
     'filter_params': filter_params,
     'prefix': prefix,
     'user': request.user,
-    'designs_json': json.dumps([query.id for query in page.object_list])
+    'designs_json': json.dumps(designs_json)
   })
 
 
@@ -253,14 +261,18 @@ def list_trashed_designs(request):
   if search_filter is not None:
     querydict_query[ prefix + 'text' ] = search_filter
 
-  page, filter_params = _list_designs(user, querydict_query, DEFAULT_PAGE_SIZE, prefix, is_trashed=True)
+  paginator, page, filter_params = _list_designs(user, querydict_query, DEFAULT_PAGE_SIZE, prefix, is_trashed=True)
+  designs_json = []
+  if page:
+    designs_json = [query.id for query in page.object_list]
 
   return render('list_trashed_designs.mako', request, {
     'page': page,
+    'paginator': paginator,
     'filter_params': filter_params,
     'prefix': prefix,
     'user': request.user,
-    'designs_json': json.dumps([query.id for query in page.object_list])
+    'designs_json': json.dumps(designs_json)
   })
 
 
@@ -281,7 +293,7 @@ def my_queries(request):
   querydict_history[ prefix + 'user' ] = request.user
   querydict_history[ prefix + 'type' ] = app_name
 
-  hist_page, hist_filter = _list_query_history(request.user,
+  hist_paginator, hist_page, hist_filter = _list_query_history(request.user,
                                                querydict_history,
                                                DEFAULT_PAGE_SIZE,
                                                prefix)
@@ -292,7 +304,10 @@ def my_queries(request):
   querydict_query[ prefix + 'user' ] = request.user
   querydict_query[ prefix + 'type' ] = app_name
 
-  query_page, query_filter = _list_designs(request.user, querydict_query, DEFAULT_PAGE_SIZE, prefix)
+  query_paginator, query_page, query_filter = _list_designs(request.user, querydict_query, DEFAULT_PAGE_SIZE, prefix)
+  designs_json = []
+  if query_page:
+    designs_json = [query.id for query in query_page.object_list]
 
   filter_params = hist_filter
   filter_params.update(query_filter)
@@ -300,9 +315,11 @@ def my_queries(request):
   return render('my_queries.mako', request, {
     'request': request,
     'h_page': hist_page,
+    'h_paginator': hist_paginator,
     'q_page': query_page,
+    'q_paginator': query_paginator,
     'filter_params': filter_params,
-    'designs_json': json.dumps([query.id for query in query_page.object_list])
+    'designs_json': json.dumps(designs_json)
   })
 
 
@@ -333,7 +350,7 @@ def list_query_history(request):
   app_name = get_app_name(request)
   querydict_query[prefix + 'type'] = app_name
 
-  page, filter_params = _list_query_history(request.user, querydict_query, DEFAULT_PAGE_SIZE, prefix)
+  paginator, page, filter_params = _list_query_history(request.user, querydict_query, DEFAULT_PAGE_SIZE, prefix)
 
   filter = request.GET.get(prefix + 'search') and request.GET.get(prefix + 'search') or ''
 
@@ -347,6 +364,7 @@ def list_query_history(request):
   return render('list_history.mako', request, {
     'request': request,
     'page': page,
+    'paginator': paginator,
     'filter_params': filter_params,
     'share_queries': share_queries,
     'prefix': prefix,
@@ -366,13 +384,16 @@ def massage_query_history_for_json(app_name, query_history):
   }
 
 
-def download(request, id, format):
+def download(request, id, format, user_agent=None):
+  if not ENABLE_DOWNLOAD.get():
+    return serve_403_error(request)
+
   try:
     query_history = authorized_get_query_history(request, id, must_exist=True)
     db = dbms.get(request.user, query_history.get_query_server_config())
     LOG.debug('Download results for query %s: [ %s ]' % (query_history.server_id, query_history.query))
 
-    return data_export.download(query_history.get_handle(), format, db)
+    return data_export.download(query_history.get_handle(), format, db, user_agent=user_agent)
   except Exception, e:
     if not hasattr(e, 'message') or not e.message:
       message = e
@@ -399,7 +420,7 @@ def execute_query(request, design_id=None, query_history_id=None):
         handle, state = _get_query_handle_and_state(query_history)
 
       if 'on_success_url' in request.GET:
-        if request.GET.get('on_success_url'):
+        if request.GET.get('on_success_url') and any([regexp.match(request.GET.get('on_success_url')) for regexp in REDIRECT_WHITELIST.get()]):
           action = 'watch-redirect'
         else:
           action = 'watch-results'
@@ -511,7 +532,7 @@ def view_results(request, id, first_row=0):
     'columns': columns,
     'expected_first_row': first_row,
     'log': log,
-    'hadoop_jobs': app_name != 'impala' and _parse_out_hadoop_jobs(log),
+    'hadoop_jobs': app_name != 'impala' and parse_out_jobs(log),
     'query_context': query_context,
     'can_save': False,
     'context_param': context_param,
@@ -584,7 +605,8 @@ def install_examples(request):
   if request.method == 'POST':
     try:
       app_name = get_app_name(request)
-      beeswax.management.commands.beeswax_install_examples.Command().handle(app_name=app_name, user=request.user)
+      db_name = request.POST.get('db_name', 'default')
+      beeswax.management.commands.beeswax_install_examples.Command().handle(app_name=app_name, db_name=db_name, user=request.user)
       response['status'] = 0
     except Exception, err:
       LOG.exception(err)
@@ -720,7 +742,7 @@ def make_parameterization_form(query_str):
   if len(variables) > 0:
     class Form(forms.Form):
       for name in sorted(variables):
-        locals()[name] = forms.CharField(required=True)
+        locals()[name] = forms.CharField(widget=forms.TextInput(attrs={'required': True}))
     return Form
   else:
     return None
@@ -843,14 +865,17 @@ def _list_designs(user, querydict, page_size, prefix="", is_trashed=False):
   designs = [job.content_object for job in db_queryset.all() if job.content_object and job.content_object.is_auto == False]
 
   pagenum = int(querydict.get(prefix + 'page', 1))
-  paginator = Paginator(designs, page_size)
-  page = paginator.page(pagenum)
+  paginator = Paginator(designs, page_size, allow_empty_first_page=True)
+  try:
+    page = paginator.page(pagenum)
+  except EmptyPage:
+    page = None
 
   # We need to pass the parameters back to the template to generate links
   keys_to_copy = [ prefix + key for key in ('user', 'type', 'sort', 'text') ]
   filter_params = copy_query_dict(querydict, keys_to_copy)
 
-  return page, filter_params
+  return paginator, page, filter_params
 
 
 def _get_query_handle_and_state(query_history):
@@ -885,7 +910,7 @@ def parse_query_context(context):
   return pair
 
 
-def _parse_out_hadoop_jobs(log, engine='mr', with_state=False):
+def parse_out_jobs(log, engine='mr', with_state=False):
   """
   Ideally, Hive would tell us what jobs it has run directly from the Thrift interface.
 
@@ -897,6 +922,8 @@ def _parse_out_hadoop_jobs(log, engine='mr', with_state=False):
     start_pattern = HADOOP_JOBS_RE
   elif engine.lower() == 'spark':
     start_pattern = SPARK_APPLICATION_RE
+  elif engine.lower() == 'tez':
+    start_pattern = TEZ_APPLICATION_RE
   else:
     raise ValueError(_('Cannot parse job IDs for execution engine %(engine)s') % {'engine': engine})
 
@@ -911,7 +938,7 @@ def _parse_out_hadoop_jobs(log, engine='mr', with_state=False):
       if end_pattern in log:
         job = next((job for job in ret if job['job_id'] == job_id), None)
         if job is not None:
-           job['finished'] = True
+          job['finished'] = True
         else:
           ret.append({'job_id': job_id, 'started': True, 'finished': True})
     else:
@@ -1008,19 +1035,24 @@ def _list_query_history(user, querydict, page_size, prefix=""):
   if pagenum < 1:
     pagenum = 1
   db_queryset = db_queryset[ page_size * (pagenum - 1) : page_size * pagenum ]
-  paginator = Paginator(db_queryset, page_size, total=total_count)
-  page = paginator.page(pagenum)
+  paginator = Paginator(db_queryset, page_size, allow_empty_first_page=True)
+
+  try:
+    page = paginator.page(pagenum)
+  except EmptyPage:
+    page = None
 
   # We do slicing ourselves, rather than letting the Paginator handle it, in order to
   # update the last_state on the running queries
-  for history in page.object_list:
-    _update_query_state(history.get_full_object())
+  if page:
+    for history in page.object_list:
+      _update_query_state(history.get_full_object())
 
   # We need to pass the parameters back to the template to generate links
   keys_to_copy = [ prefix + key for key in ('user', 'type', 'sort', 'design_id', 'auto_query', 'search') ]
   filter_params = copy_query_dict(querydict, keys_to_copy)
 
-  return page, filter_params
+  return paginator, page, filter_params
 
 
 def _update_query_state(query_history):
@@ -1032,7 +1064,7 @@ def _update_query_state(query_history):
   Note that there is a transition from available/failed to expired. That occurs lazily
   when the user attempts to view results that have expired.
   """
-  if query_history.last_state <= models.QueryHistory.STATE.running.index:
+  if query_history.last_state <= models.QueryHistory.STATE.running.value:
     try:
       state_enum = dbms.get(query_history.owner, query_history.get_query_server_config()).get_state(query_history.get_handle())
       if state_enum is None:

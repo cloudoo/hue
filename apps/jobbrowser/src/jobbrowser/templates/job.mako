@@ -20,7 +20,7 @@
   import os
   from hadoop.fs.exceptions import WebHdfsException
   from jobbrowser.views import format_counter_name
-  from filebrowser.views import location_to_url
+  from desktop.lib.view_util import location_to_url
   from desktop.views import commonheader, commonfooter
   from django.template.defaultfilters import urlencode
   from django.utils.translation import ugettext as _
@@ -39,7 +39,7 @@
             <tr>
                 <td data-row-selector-exclude="true">
                 %if task.taskAttemptIds:
-                    <a href="${ url('jobbrowser.views.single_task_attempt_logs', job=task.jobId, taskid=task.taskId, attemptid=task.taskAttemptIds[-1]) }"
+                    <a href="${ url('single_task_attempt_logs', job=task.jobId, taskid=task.taskId, attemptid=task.taskAttemptIds[-1]) }"
                         data-row-selector="true"><i class="fa fa-tasks"></i>
                     </a>
                 %endif
@@ -83,7 +83,7 @@
     % endfor
 </%def>
 
-${ commonheader(_('Job: %(jobId)s') % dict(jobId=job.jobId_short), "jobbrowser", user) | n,unicode }
+${ commonheader(_('Job: %(jobId)s') % dict(jobId=job.jobId_short), "jobbrowser", user, request) | n,unicode }
 ${ comps.menubar() }
 
 <link href="${ static('jobbrowser/css/jobbrowser.css') }" rel="stylesheet">
@@ -107,15 +107,17 @@ ${ comps.menubar() }
       <div class="sidebar-nav" style="padding-top: 0">
         <ul class="nav nav-list">
           <li class="nav-header">${_('App ID')}</li>
-          <li class="white truncate" title="${job.jobId_short}">${job.jobId_short}</li>
+          <li class="white truncate-text" title="${job.jobId_short}">${job.jobId_short}</li>
           <li class="nav-header">${_('Type')}</li>
-          <li class="white truncate" title="${job.applicationType}">${job.applicationType}</li>
+          <li class="white truncate-text" title="${job.applicationType}">${job.applicationType}</li>
           <li class="nav-header">${_('User')}</li>
           <li class="white">${job.user}</li>
           <li class="nav-header">${_('Status')}</li>
           <li class="white" id="jobStatus">&nbsp;</li>
+          % if job.logs_url:
           <li class="nav-header">${_('Logs')}</li>
           <li><a href="${job.logs_url }" target="_blank"><i class="fa fa-tasks"></i> ${_('Logs')}</a></li>
+          % endif
           <li class="nav-header">${_('Progress')}</li>
           <li class="white">${job.progress}%</li>
           <li class="nav-header">${_('Duration')}</li>
@@ -226,9 +228,9 @@ ${ comps.menubar() }
       <div class="sidebar-nav" style="padding-top: 0">
         <ul class="nav nav-list">
           <li class="nav-header">${_('Job ID')}</li>
-          <li class="white truncate" title="${job.jobId_short}">${job.jobId_short}</li>
+          <li class="white truncate-text" title="${job.jobId_short}">${job.jobId_short}</li>
           <li class="nav-header">${_('Type')}</li>
-          <li class="white truncate" title="${job.applicationType or 'MR2'}">${job.applicationType or 'MR2'}</li>
+          <li class="white truncate-text" title="${job.applicationType or 'MR2'}">${job.applicationType or 'MR2'}</li>
           <li class="nav-header">${_('User')}</li>
           <li class="white">${job.user}</li>
           % if job.conf_keys is not None and 'hive.server2.proxy.user' in job.conf_keys:
@@ -306,7 +308,7 @@ ${ comps.menubar() }
                       % for attempt in job.job_attempts['jobAttempt']:
                       <tr>
                         <td>
-                          <a href="${ url('jobbrowser.views.job_attempt_logs', job=job.jobId, attempt_index=loop.index) }" data-row-selector="true">
+                          <a href="${ url('job_attempt_logs', job=job.jobId, attempt_index=loop.index) }" data-row-selector="true">
                             <i class="fa fa-tasks"></i>
                           </a>
                         </td>
@@ -447,9 +449,9 @@ ${ comps.menubar() }
       <div class="sidebar-nav" style="padding-top: 0">
         <ul class="nav nav-list">
           <li class="nav-header">${_('App ID')}</li>
-          <li class="white truncate" title="${job.jobId_short}">${job.jobId_short}</li>
+          <li class="white truncate-text" title="${job.jobId_short}">${job.jobId_short}</li>
           <li class="nav-header">${_('Type')}</li>
-          <li class="white truncate" title="${job.applicationType}">${job.applicationType}</li>
+          <li class="white truncate-text" title="${job.applicationType}">${job.applicationType}</li>
           <li class="nav-header">${_('User')}</li>
           <li class="white">${job.user}</li>
           <li class="nav-header">${_('Status')}</li>
@@ -541,8 +543,8 @@ ${ comps.menubar() }
 
 <div id="killModal" class="modal hide fade">
   <div class="modal-header">
-    <a href="#" class="close" data-dismiss="modal">&times;</a>
-    <h3>${_('Confirm Kill')}</h3>
+    <button type="button" class="close" data-dismiss="modal" aria-label="${ _('Close') }"><span aria-hidden="true">&times;</span></button>
+    <h2 class="modal-title">${_('Confirm Kill')}</h2>
   </div>
   <div class="modal-body">
     <p>${_('Are you sure you want to kill this job?')}</p>
@@ -555,7 +557,7 @@ ${ comps.menubar() }
 
 <script src="${ static('jobbrowser/js/utils.js') }" type="text/javascript" charset="utf-8"></script>
 
-<script type="text/javascript" charset="utf-8">
+<script type="text/javascript">
 $(document).ready(function () {
   $(".taskTable").dataTable({
     "bPaginate": false,

@@ -17,19 +17,18 @@
 
 import json
 import logging
-import re
 import time
 
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.utils.translation import ugettext as _
 
 from desktop.lib.i18n import smart_str
 from desktop.lib.view_util import format_duration_in_millis
-from jobbrowser.views import job_single_logs
-from jobbrowser.models import LinkJobLogs
 from liboozie.oozie_api import get_oozie
 from oozie.models import Workflow, Pig
+from oozie.views.api import get_log as get_workflow_logs
 from oozie.views.editor import _submit_workflow
+
 
 LOG = logging.getLogger(__name__)
 
@@ -42,16 +41,22 @@ class OozieApi(object):
   """
   Oozie submission.
   """
+
   WORKFLOW_NAME = 'pig-app-hue-script'
-  RE_LOG_END = re.compile('(<<< Invocation of Pig command completed <<<|<<< Invocation of Main class completed <<<)')
-  RE_LOG_START_RUNNING = re.compile('(Pig script \[(?:[\w.-]+)\] content:.+)', re.M | re.DOTALL)
+  LOG_START_PATTERN = '(Pig script \[(?:[\w.-]+)\] content:.+)'
+  LOG_END_PATTERN = '(&lt;&lt;&lt; Invocation of Pig command completed &lt;&lt;&lt;|' \
+                    '&lt;&lt;&lt; Invocation of Main class completed &lt;&lt;&lt;|' \
+                    '<<< Invocation of Pig command completed <<<|' \
+                    '<<< Invocation of Main class completed <<<)'
   MAX_DASHBOARD_JOBS = 100
+
 
   def __init__(self, fs, jt, user):
     self.oozie_api = get_oozie(user)
     self.fs = fs
     self.jt = jt
     self.user = user
+
 
   def submit(self, pig_script, params):
     workflow = None
@@ -66,13 +71,14 @@ class OozieApi(object):
 
     return oozie_wf
 
+
   def _create_workflow(self, pig_script, params):
     workflow = Workflow.objects.new_workflow(self.user)
     workflow.schema_version = 'uri:oozie:workflow:0.5'
     workflow.name = OozieApi.WORKFLOW_NAME
     workflow.is_history = True
     if pig_script.use_hcatalog:
-      workflow.add_parameter("oozie.action.sharelib.for.pig", "pig,hcatalog")
+      workflow.add_parameter("oozie.action.sharelib.for.pig", "pig,hcatalog,hive")
     workflow.save()
     Workflow.objects.initialize(workflow, self.fs)
 
@@ -139,6 +145,7 @@ class OozieApi(object):
 
     return workflow
 
+
   def _build_parameters(self, params):
     pig_params = []
 
@@ -154,8 +161,10 @@ class OozieApi(object):
 
     return pig_params
 
+
   def stop(self, job_id):
     return self.oozie_api.job_control(job_id, 'kill')
+
 
   def get_jobs(self):
     kwargs = {'cnt': OozieApi.MAX_DASHBOARD_JOBS,}
@@ -166,54 +175,11 @@ class OozieApi(object):
 
     return self.oozie_api.get_workflows(**kwargs).jobs
 
-  def get_log(self, request, oozie_workflow):
-    logs = {}
-    is_really_done = False
 
-    for action in oozie_workflow.get_working_actions():
-      try:
-        if action.externalId:
-          data = job_single_logs(request, **{'job': action.externalId})
+  def get_log(self, request, oozie_workflow, make_links=True):
+    return get_workflow_logs(request, oozie_workflow, make_links=make_links, log_start_pattern=self.LOG_START_PATTERN,
+                             log_end_pattern=self.LOG_END_PATTERN)
 
-          if data and 'logs' in data:
-            matched_logs = self._match_logs(data)
-
-            if matched_logs:
-              logs[action.name] = LinkJobLogs._make_links(matched_logs)
-
-            is_really_done = OozieApi.RE_LOG_END.search(data['logs'][1]) is not None
-            if is_really_done and not matched_logs:
-              LOG.warn('Unable to scrape full pig logs, try increasing the jobbrowser log_offset configuration value.')
-      except Exception, e:
-        LOG.error('An error occurred while watching the job running: %(error)s' % {'error': e})
-        is_really_done = True
-
-    workflow_actions = []
-
-    # Only one Pig action
-    for action in oozie_workflow.get_working_actions():
-      progress = get_progress(oozie_workflow, logs.get(action.name, ''))
-      appendable = {
-        'name': action.name,
-        'status': action.status,
-        'logs': logs.get(action.name, ''),
-        'isReallyDone': is_really_done,
-        'progress': progress,
-        'progressPercent': '%d%%' % progress,
-        'absoluteUrl': oozie_workflow.get_absolute_url(),
-      }
-      workflow_actions.append(appendable)
-
-    return logs, workflow_actions, is_really_done
-
-  def _match_logs(self, data):
-    """Difficult to match multi lines of text"""
-    logs = data['logs'][1]
-
-    if OozieApi.RE_LOG_START_RUNNING.search(logs):
-      return re.search(OozieApi.RE_LOG_START_RUNNING, logs).group(1).strip()
-    else:
-      return None
 
   def massaged_jobs_for_json(self, request, oozie_jobs, hue_jobs):
     jobs = []
@@ -264,15 +230,6 @@ class OozieApi(object):
       jobs.append(massaged_job)
 
     return jobs
-
-def get_progress(job, log):
-  if job.status in ('SUCCEEDED', 'KILLED', 'FAILED'):
-    return 100
-  else:
-    try:
-      return int(re.findall("MapReduceLauncher  - (1?\d?\d)% complete", log)[-1])
-    except:
-      return 0
 
 
 def format_time(st_time):

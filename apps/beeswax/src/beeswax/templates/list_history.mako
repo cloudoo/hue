@@ -26,7 +26,7 @@ from beeswax.views import collapse_whitespace
 <%namespace name="layout" file="layout.mako" />
 <%namespace name="comps" file="beeswax_components.mako" />
 
-${ commonheader(_('History'), app_name, user) | n,unicode }
+${ commonheader(_('History'), app_name, user, request) | n,unicode }
 ${ layout.menubar(section='history') }
 
 <%def name="show_saved_query(design, history)">
@@ -108,7 +108,7 @@ ${ layout.menubar(section='history') }
             <div class="card-body">
               <p>
 
-            <table class="table table-striped table-condensed datatables" style="padding-left: 0;">
+            <table class="table table-condensed datatables" style="padding-left: 0;">
             <thead>
               <tr>
                 <th width="15%">${_('Time')}</th>
@@ -120,28 +120,30 @@ ${ layout.menubar(section='history') }
               </tr>
             </thead>
             <tbody>
-            % for query in page.object_list:
-              <tr class="histRow">
-                <td data-sort-value="${time.mktime(query.submission_date.timetuple())}"></td>
-                <td>${show_saved_query(query.design, query)}</td>
-                <td>
-                  % if len(query.query) > 100:
-                    <code>${collapse_whitespace(query.query[:100])}...</code>
-                  % else:
-                    <code>${collapse_whitespace(query.query)}</code>
-                  % endif
-                </td>
-                <td>${query.owner}</td>
-                <td>${models.QueryHistory.STATE[query.last_state]}</td>
-                <td>
-                  % if query.last_state not in (models.QueryHistory.STATE.expired.index, models.QueryHistory.STATE.failed.index):
-                    <a href="${ url(app_name + ':watch_query_history', query_history_id=query.id) }" data-row-selector="true">${_('Results')}</a>
-                  % else:
-                    ~
-                  % endif
-                </td>
-              </tr>
-            % endfor
+            % if page:
+              % for query in page.object_list:
+                <tr class="histRow">
+                  <td data-sort-value="${time.mktime(query.submission_date.timetuple())}"></td>
+                  <td>${show_saved_query(query.design, query)}</td>
+                  <td>
+                    % if len(query.query) > 100:
+                      <code>${collapse_whitespace(query.query[:100])}...</code>
+                    % else:
+                      <code>${collapse_whitespace(query.query)}</code>
+                    % endif
+                  </td>
+                  <td>${query.owner}</td>
+                  <td>${query.last_state}</td>
+                  <td>
+                    % if query.last_state not in (models.QueryHistory.STATE.expired.value, models.QueryHistory.STATE.failed.value):
+                      <a href="${ url(app_name + ':watch_query_history', query_history_id=query.id) }" data-row-selector="true">${_('Results')}</a>
+                    % else:
+                      ~
+                    % endif
+                  </td>
+                </tr>
+              % endfor
+            % endif
             </tbody>
           </table>
 
@@ -153,9 +155,7 @@ ${ layout.menubar(section='history') }
     </div>
 </div>
 
-<script src="${ static('desktop/ext/js/knockout.min.js') }" type="text/javascript" charset="utf-8"></script>
-
-<script type="text/javascript" charset="utf-8">
+<script type="text/javascript">
   $(document).ready(function () {
 
     function HistoryViewModel() {

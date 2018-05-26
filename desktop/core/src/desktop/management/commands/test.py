@@ -20,37 +20,95 @@ Desktop-aware test runner.
 Django's "test" command merely executes the test_runner,
 so we circumvent it entirely and create our own.
 """
-from django.test.utils import setup_test_environment
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.test.utils import get_runner
 from django_nose import runner
 
-import south.management.commands
+#import south.management.commands
+from django.utils import six
+from django.utils.translation import deactivate
 import sys
 import textwrap
 import logging
 
 from desktop import appmanager
+from desktop.lib import django_mako
 from desktop.management.commands import test_windmill
+
+if six.PY3:
+    from types import SimpleNamespace
+else:
+    class SimpleNamespace(object):
+        pass
+
+class _TestState(object):
+    pass
+
+
+def setup_test_environment(debug=None):
+    """
+    Perform global pre-test setup, such as installing the instrumented template
+    renderer and setting the email backend to the locmem email backend.
+    """
+    if hasattr(_TestState, 'saved_data'):
+        # Executing this function twice would overwrite the saved values.
+        raise RuntimeError(
+            "setup_test_environment() was already called and can't be called "
+            "again without first calling teardown_test_environment()."
+        )
+
+    if debug is None:
+        debug = settings.DEBUG
+
+    saved_data = SimpleNamespace()
+    _TestState.saved_data = saved_data
+
+    saved_data.allowed_hosts = settings.ALLOWED_HOSTS
+    # Add the default host of the test client.
+    settings.ALLOWED_HOSTS = list(settings.ALLOWED_HOSTS) + ['testserver']
+
+    saved_data.debug = settings.DEBUG
+    settings.DEBUG = debug
+
+    django_mako.render_to_string = django_mako.render_to_string_test
+
+    deactivate()
+
+
+def teardown_test_environment():
+    """
+    Perform any global post-test teardown, such as restoring the original
+    template renderer and restoring the email sending functions.
+    """
+    saved_data = _TestState.saved_data
+
+    settings.ALLOWED_HOSTS = saved_data.allowed_hosts
+    settings.DEBUG = saved_data.debug
+    django_mako.render_to_string = django_mako.render_to_string_normal
+
+    del _TestState.saved_data
+
 
 class Command(BaseCommand):
   help = textwrap.dedent("""\
     Use the following arguments:
 
-      all        Runs tests for all desktop applications and libraries
-                 Additional arguments are passed to nose.
+      all           Runs tests for all desktop applications and libraries
+                    Additional arguments are passed to nose.
 
-      fast       Runs the "fast" tests, namely those that don't start Hadoop.
+      fast          Runs the "fast" tests, namely those that don't start Hadoop.
 
-      specific   Explicitly run specific tests using nose.
-                 For example, to run all the filebrower tests or
-                 to run a specific test function, use
-                    test specific filebrowser
-                    test specific useradmin.tests:test_user_admin
-                 All additional arguments are passed directly to nose.
+      specific      Explicitly run specific tests using nose.
+                    For example, to run all the filebrower tests or
+                    to run a specific test function, use
+                       test specific filebrowser
+                       test specific useradmin.tests:test_user_admin
+                    All additional arguments are passed directly to nose.
 
-      windmill   Runs windmill tests
+      windmill      Runs windmill tests
+
+      list_modules  List test modules for all desktop applications and libraries
 
     Common useful extra arguments for nose:
       --nologcapture
@@ -72,9 +130,9 @@ class Command(BaseCommand):
     args = argv[2:] # First two are "desktop" and "test"
 
     # Patch South things in
-    south.management.commands.patch_for_test_db_setup()
-    south_logger = logging.getLogger('south')
-    south_logger.setLevel(logging.INFO)
+    #south.management.commands.patch_for_test_db_setup()
+    #south_logger = logging.getLogger('south')
+    #south_logger.setLevel(logging.INFO)
 
     if len(args) == 0:
       print self.help
@@ -92,6 +150,9 @@ class Command(BaseCommand):
       ret = test_windmill.Command().handle(*args)
     elif args[0] in ("specific", "nose"):
       nose_args = args
+    elif args[0] == "list_modules":
+      print '\n'.join(all_apps)
+      sys.exit(0)
     else:
       print self.help
       sys.exit(1)

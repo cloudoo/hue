@@ -57,17 +57,16 @@ from django.db import connection, models, transaction
 from django.contrib.auth import models as auth_models
 from django.core.cache import cache
 from django.utils.translation import ugettext_lazy as _t
+import django.utils.timezone as dtz
 
 from desktop import appmanager
 from desktop.lib.exceptions_renderable import PopupException
-from desktop.models import SAMPLE_USER_ID, SAMPLE_USER_INSTALL
+from desktop.models import SAMPLE_USER_ID, SAMPLE_USER_INSTALL, HueUser
 from hadoop import cluster
 
 import useradmin.conf
 
-
 LOG = logging.getLogger(__name__)
-
 
 class UserProfile(models.Model):
   """
@@ -89,14 +88,16 @@ class UserProfile(models.Model):
   PROPERLY
   """
   # Enum for describing the creation method of a user.
-  CreationMethod = Enum('HUE', 'EXTERNAL')
+  class CreationMethod(Enum):
+    HUE = 1
+    EXTERNAL = 2
 
-  user = models.ForeignKey(auth_models.User, unique=True)
+  user = models.OneToOneField(auth_models.User, unique=True)
   home_directory = models.CharField(editable=True, max_length=1024, null=True)
-  creation_method = models.CharField(editable=True, null=False, max_length=64, default=str(CreationMethod.HUE))
+  creation_method = models.CharField(editable=True, null=False, max_length=64, default=CreationMethod.HUE.name)
   first_login = models.BooleanField(default=True, verbose_name=_t('First Login'),
                                    help_text=_t('If this is users first login.'))
-  last_activity = models.DateTimeField(default=datetime.fromtimestamp(0), db_index=True)
+  last_activity = models.DateTimeField(auto_now=True, db_index=True)
 
   def get_groups(self):
     return self.user.groups.all()
@@ -162,7 +163,7 @@ def group_permissions(group):
 def create_profile_for_user(user):
   p = UserProfile()
   p.user = user
-  p.last_activity = datetime.now()
+  p.last_activity = dtz.now()
   p.home_directory = "/user/%s" % p.user.username
   try:
     p.save()
@@ -280,6 +281,8 @@ def update_app_permissions(**kwargs):
            not (new_dp.app == 'metastore' and new_dp.action == 'write') and \
            not (new_dp.app == 'hbase' and new_dp.action == 'write') and \
            not (new_dp.app == 'security' and new_dp.action == 'impersonate') and \
+           not (new_dp.app == 'filebrowser' and new_dp.action == 's3_access') and \
+           not (new_dp.app == 'filebrowser' and new_dp.action == 'adls_access') and \
            not (new_dp.app == 'oozie' and new_dp.action == 'disable_editor_access'):
           GroupPermission.objects.create(group=default_group, hue_permission=new_dp)
 
@@ -291,8 +294,8 @@ def update_app_permissions(**kwargs):
             uptodate,
             available - len(added) - updated - uptodate))
 
-models.signals.post_syncdb.connect(update_app_permissions)
-models.signals.post_syncdb.connect(get_default_user_group)
+models.signals.post_migrate.connect(update_app_permissions)
+models.signals.post_migrate.connect(get_default_user_group)
 
 
 def install_sample_user():
@@ -300,25 +303,32 @@ def install_sample_user():
   Setup the de-activated sample user with a certain id. Do not create a user profile.
   """
   user = None
+
   try:
-    user = auth_models.User.objects.get(id=SAMPLE_USER_ID)
-    LOG.info('Sample user found: %s' % user.username)
+    if auth_models.User.objects.filter(id=SAMPLE_USER_ID).exists():
+      user = auth_models.User.objects.get(id=SAMPLE_USER_ID)
+      LOG.info('Sample user found with username "%s" and User ID: %s' % (user.username, user.id))
+    elif auth_models.User.objects.filter(username=SAMPLE_USER_INSTALL).exists():
+      user = auth_models.User.objects.get(username=SAMPLE_USER_INSTALL)
+      LOG.info('Sample user found: %s' % user.username)
+    else:
+      user, created = auth_models.User.objects.get_or_create(
+        username=SAMPLE_USER_INSTALL,
+        password='!',
+        is_active=False,
+        is_superuser=False,
+        id=SAMPLE_USER_ID,
+        pk=SAMPLE_USER_ID)
+
+      if created:
+        LOG.info('Installed a user called "%s"' % SAMPLE_USER_INSTALL)
+
     if user.username != SAMPLE_USER_INSTALL:
+      LOG.warn('Sample user does not have username "%s", will attempt to modify the username.' % SAMPLE_USER_INSTALL)
       with transaction.atomic():
         user = auth_models.User.objects.get(id=SAMPLE_USER_ID)
         user.username = SAMPLE_USER_INSTALL
         user.save()
-  except auth_models.User.DoesNotExist:
-    user, created = auth_models.User.objects.get_or_create(
-      username=SAMPLE_USER_INSTALL,
-      password='!',
-      is_active=False,
-      is_superuser=False,
-      id=SAMPLE_USER_ID,
-      pk=SAMPLE_USER_ID)
-
-    if created:
-      LOG.info('Installed a user called "%s"' % SAMPLE_USER_INSTALL)
   except Exception, ex:
     LOG.exception('Failed to get or create sample user')
 

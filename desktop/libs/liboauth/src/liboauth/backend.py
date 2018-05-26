@@ -58,7 +58,7 @@ class OAuthBackend(DesktopBackendBase):
         user = User.objects.get(username=username)
     except User.DoesNotExist:
 
-      if not UserProfile.objects.filter(creation_method=str(UserProfile.CreationMethod.EXTERNAL)).exists():
+      if not UserProfile.objects.filter(creation_method=UserProfile.CreationMethod.EXTERNAL.name).exists():
         is_super = True
       else:
         is_super = False
@@ -87,11 +87,11 @@ class OAuthBackend(DesktopBackendBase):
   @classmethod
   def is_first_login_ever(cls):
     """ Return true if no external user has ever logged in to Desktop yet. """
-    return not UserProfile.objects.filter(creation_method=str(UserProfile.CreationMethod.EXTERNAL)).exists()
+    return not UserProfile.objects.filter(creation_method=UserProfile.CreationMethod.EXTERNAL.name).exists()
   
 
   @classmethod
-  def handleAuthenticationRequest(self, request):
+  def handleAuthenticationRequest(cls, request):
     assert oauth is not None
  
     if 'oauth_verifier' in request.GET:
@@ -116,7 +116,7 @@ class OAuthBackend(DesktopBackendBase):
         if 'error' in request.GET or 'code' not in request.GET:
             return ""
 
-        redirect_uri = get_redirect_uri()
+        redirect_uri = get_redirect_uri(request)
         code = request.GET['code']
         grant_type = 'authorization_code'
 
@@ -190,25 +190,15 @@ class OAuthBackend(DesktopBackendBase):
     return access_token, nexturl
 
 
-  def get_redirect_uri(self, request):
-    # Either use the proxy-specified protocol or the one from the request itself.
-    # This is useful if the server is behind some kind of proxy
-    protocol = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
-    host = request.get_host()
-    path = '/oauth/social_login/oauth_authenticated'
-
-    return protocol + "://" + host + path
-
-
   @classmethod
-  def handleLoginRequest(self, request):
+  def handleLoginRequest(cls, request):
     assert oauth is not None
 
     redirect_uri = get_redirect_uri(request)
     response_type = "code"
  
     social = request.GET['social']
-    state = social + "," + request.REQUEST.get('next', '/')
+    state = social + "," + request.GET.get('next', '/')
 
     if social == 'google':
       consumer_key=liboauth.conf.CONSUMER_KEY_GOOGLE.get()
@@ -295,3 +285,13 @@ def find_or_create_user(username, password=None):
     user.is_superuser = True
     user.save()
   return user
+
+def get_redirect_uri(request):
+  # Either use the proxy-specified protocol or the one from the request itself.
+  # This is useful if the server is behind some kind of proxy
+  protocol = request.META.get("HTTP_X_FORWARDED_PROTO",
+                              request.META.get('wsgi.url_scheme', 'http'))
+  host = request.get_host()
+  path = '/oauth/social_login/oauth_authenticated'
+
+  return protocol + "://" + host + path

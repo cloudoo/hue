@@ -20,6 +20,7 @@
 # Local customizations are done by symlinking a file
 # as local_settings.py.
 
+import gc
 import logging
 import os
 import pkg_resources
@@ -29,11 +30,11 @@ from guppy import hpy
 
 from django.utils.translation import ugettext_lazy as _
 
-import desktop.conf
-import desktop.log
 import desktop.redaction
 from desktop.lib.paths import get_desktop_root
 from desktop.lib.python_util import force_dict_to_strings
+
+from aws.conf import is_enabled as is_s3_enabled
 
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
@@ -53,7 +54,7 @@ ENV_DESKTOP_DEBUG = "DESKTOP_DEBUG"
 
 # Configure debug mode
 DEBUG = True
-TEMPLATE_DEBUG = DEBUG
+GTEMPLATE_DEBUG = DEBUG
 
 # Start basic logging as soon as possible.
 if ENV_HUE_PROCESS_NAME not in os.environ:
@@ -129,8 +130,9 @@ STATIC_URL = '/static/'
 
 STATIC_ROOT = os.path.join(BASE_DIR, 'build', 'static')
 
+
 # List of callables that know how to import templates from various sources.
-TEMPLATE_LOADERS = (
+GTEMPLATE_LOADERS = (
   'django.template.loaders.filesystem.Loader',
   'django.template.loaders.app_directories.Loader'
 )
@@ -148,18 +150,21 @@ MIDDLEWARE_CLASSES = [
     'django.middleware.locale.LocaleMiddleware',
     'babeldjango.middleware.LocaleMiddleware',
     'desktop.middleware.AjaxMiddleware',
+    'django.middleware.security.SecurityMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'desktop.middleware.ContentSecurityPolicyMiddleware',
     # Must be after Session, Auth, and Ajax. Before everything else.
     'desktop.middleware.LoginAndPermissionMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'desktop.middleware.NotificationMiddleware',
     'desktop.middleware.ExceptionMiddleware',
     'desktop.middleware.ClusterMiddleware',
-    # 'debug_toolbar.middleware.DebugToolbarMiddleware'
     'django.middleware.csrf.CsrfViewMiddleware',
 
     'django.middleware.http.ConditionalGetMiddleware',
-    'axes.middleware.FailedLoginMiddleware',
+    #@TODO@ Prakash to check FailedLoginMiddleware working or not?
+    #'axes.middleware.FailedLoginMiddleware',
+    'desktop.middleware.MimeTypeJSFileFixStreamingMiddleware',
 ]
 
 # if os.environ.get(ENV_DESKTOP_DEBUG):
@@ -171,7 +176,7 @@ ROOT_URLCONF = 'desktop.urls'
 # Hue runs its own wsgi applications
 WSGI_APPLICATION = None
 
-TEMPLATE_DIRS = (
+GTEMPLATE_DIRS = (
     get_desktop_root("core/templates"),
 )
 
@@ -187,7 +192,7 @@ INSTALLED_APPS = [
     'django_extensions',
 
     # 'debug_toolbar',
-    'south', # database migration tool
+    #'south', # database migration tool
 
     # i18n support
     'babeldjango',
@@ -204,17 +209,28 @@ LOCALE_PATHS = [
 ]
 
 # Keep default values up to date
-TEMPLATE_CONTEXT_PROCESSORS = (
+GTEMPLATE_CONTEXT_PROCESSORS = (
   'django.contrib.auth.context_processors.auth',
-  'django.core.context_processors.debug',
-  'django.core.context_processors.i18n',
-  'django.core.context_processors.media',
-  'django.core.context_processors.request',
+  'django.template.context_processors.debug',
+  'django.template.context_processors.i18n',
+  'django.template.context_processors.media',
+  'django.template.context_processors.request',
   'django.contrib.messages.context_processors.messages',
    # Not default
   'desktop.context_processors.app_name',
 )
 
+TEMPLATES = [
+  {
+    'BACKEND': 'djangomako.backends.MakoBackend',
+    'DIRS': GTEMPLATE_DIRS,
+    'NAME': 'mako',
+    'OPTIONS': {
+      'context_processors': GTEMPLATE_CONTEXT_PROCESSORS,
+      'loaders': GTEMPLATE_LOADERS,
+    },
+  },
+]
 
 # Desktop doesn't use an auth profile module, because
 # because it doesn't mesh very well with the notion
@@ -227,13 +243,6 @@ LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/" # For djangosaml2 bug.
 
 PYLINTRC = get_desktop_root('.pylintrc')
-
-# Insert our HDFS upload handler
-FILE_UPLOAD_HANDLERS = (
-  'hadoop.fs.upload.HDFSfileUploadHandler',
-  'django.core.files.uploadhandler.MemoryFileUploadHandler',
-  'django.core.files.uploadhandler.TemporaryFileUploadHandler',
-)
 
 # Custom CSRF Failure View
 CSRF_FAILURE_VIEW = 'desktop.views.csrf_failure'
@@ -275,7 +284,7 @@ conf.initialize(_app_conf_modules, _config_dir)
 
 # Now that we've loaded the desktop conf, set the django DEBUG mode based on the conf.
 DEBUG = desktop.conf.DJANGO_DEBUG_MODE.get()
-TEMPLATE_DEBUG = DEBUG
+GTEMPLATE_DEBUG = DEBUG
 if DEBUG: # For simplification, force all DEBUG when django_debug_mode is True and re-apply the loggers
   os.environ[ENV_DESKTOP_DEBUG] = 'True'
   desktop.log.basic_logging(os.environ[ENV_HUE_PROCESS_NAME])
@@ -325,6 +334,7 @@ else:
     "ENGINE" : desktop.conf.DATABASE.ENGINE.get(),
     "NAME" : desktop.conf.DATABASE.NAME.get(),
     "USER" : desktop.conf.DATABASE.USER.get(),
+    "SCHEMA" : desktop.conf.DATABASE.SCHEMA.get(),
     "PASSWORD" : desktop.conf.get_database_password(),
     "HOST" : desktop.conf.DATABASE.HOST.get(),
     "PORT" : str(desktop.conf.DATABASE.PORT.get()),
@@ -334,6 +344,7 @@ else:
     "TEST_USER" : test_user,
     # Wrap each request in a transaction.
     "ATOMIC_REQUESTS" : True,
+    "CONN_MAX_AGE" : desktop.conf.DATABASE.CONN_MAX_AGE.get(),
   }
 
 DATABASES = {
@@ -348,12 +359,25 @@ CACHES = {
 }
 
 # Configure sessions
+SESSION_COOKIE_NAME = desktop.conf.SESSION.COOKIE_NAME.get()
 SESSION_COOKIE_AGE = desktop.conf.SESSION.TTL.get()
 SESSION_COOKIE_SECURE = desktop.conf.SESSION.SECURE.get()
 SESSION_EXPIRE_AT_BROWSER_CLOSE = desktop.conf.SESSION.EXPIRE_AT_BROWSER_CLOSE.get()
 
 # HTTP only
 SESSION_COOKIE_HTTPONLY = desktop.conf.SESSION.HTTP_ONLY.get()
+
+CSRF_COOKIE_SECURE = desktop.conf.SESSION.SECURE.get()
+CSRF_COOKIE_HTTPONLY = desktop.conf.SESSION.HTTP_ONLY.get()
+CSRF_COOKIE_NAME='csrftoken'
+
+SECURE_HSTS_SECONDS = desktop.conf.SECURE_HSTS_SECONDS.get()
+SECURE_HSTS_INCLUDE_SUBDOMAINS = desktop.conf.SECURE_HSTS_INCLUDE_SUBDOMAINS.get()
+SECURE_CONTENT_TYPE_NOSNIFF = desktop.conf.SECURE_CONTENT_TYPE_NOSNIFF.get()
+SECURE_BROWSER_XSS_FILTER = desktop.conf.SECURE_BROWSER_XSS_FILTER.get()
+SECURE_SSL_REDIRECT = desktop.conf.SECURE_SSL_REDIRECT.get()
+SECURE_SSL_HOST = desktop.conf.SECURE_SSL_HOST.get()
+SECURE_REDIRECT_EXEMPT = desktop.conf.SECURE_REDIRECT_EXEMPT.get()
 
 # django-nose test specifics
 TEST_RUNNER = 'desktop.lib.test_runners.HueTestRunner'
@@ -393,9 +417,17 @@ else:
 # Axes
 AXES_LOGIN_FAILURE_LIMIT = desktop.conf.AUTH.LOGIN_FAILURE_LIMIT.get()
 AXES_LOCK_OUT_AT_FAILURE = desktop.conf.AUTH.LOGIN_LOCK_OUT_AT_FAILURE.get()
-AXES_COOLOFF_TIME = desktop.conf.AUTH.LOGIN_COOLOFF_TIME.get()
+AXES_COOLOFF_TIME = None
+if desktop.conf.AUTH.LOGIN_COOLOFF_TIME.get() and desktop.conf.AUTH.LOGIN_COOLOFF_TIME.get() != 0:
+  AXES_COOLOFF_TIME = desktop.conf.AUTH.LOGIN_COOLOFF_TIME.get()
 AXES_USE_USER_AGENT = desktop.conf.AUTH.LOGIN_LOCK_OUT_USE_USER_AGENT.get()
 AXES_LOCK_OUT_BY_COMBINATION_USER_AND_IP = desktop.conf.AUTH.LOGIN_LOCK_OUT_BY_COMBINATION_USER_AND_IP.get()
+AXES_BEHIND_REVERSE_PROXY = desktop.conf.AUTH.BEHIND_REVERSE_PROXY.get()
+AXES_REVERSE_PROXY_HEADER = desktop.conf.AUTH.REVERSE_PROXY_HEADER.get()
+
+
+LOGIN_URL = '/hue/accounts/login'
+
 
 # SAML
 SAML_AUTHENTICATION = 'libsaml.backend.SAML2Backend' in AUTHENTICATION_BACKENDS
@@ -433,11 +465,33 @@ USE_X_FORWARDED_HOST = desktop.conf.USE_X_FORWARDED_HOST.get()
 
 # Support HTTPS load-balancing
 if desktop.conf.SECURE_PROXY_SSL_HEADER.get():
-  SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTOCOL', 'https')
+  SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # Add last activity tracking and idle session timeout
 if 'useradmin' in [app.name for app in appmanager.DESKTOP_APPS]:
   MIDDLEWARE_CLASSES.append('useradmin.middleware.LastActivityMiddleware')
+
+if desktop.conf.SESSION.CONCURRENT_USER_SESSION_LIMIT.get():
+  MIDDLEWARE_CLASSES.append('useradmin.middleware.ConcurrentUserSessionMiddleware')
+
+LOAD_BALANCER_COOKIE = 'ROUTEID'
+
+################################################################
+# Register file upload handlers
+# This section must go after the desktop lib modules are loaded
+################################################################
+
+# Insert our custom upload handlers
+file_upload_handlers = [
+    'hadoop.fs.upload.HDFSfileUploadHandler',
+    'django.core.files.uploadhandler.MemoryFileUploadHandler',
+    'django.core.files.uploadhandler.TemporaryFileUploadHandler',
+]
+
+if is_s3_enabled():
+  file_upload_handlers.insert(0, 'aws.s3.upload.S3FileUploadHandler')
+
+FILE_UPLOAD_HANDLERS = tuple(file_upload_handlers)
 
 ############################################################
 
@@ -447,6 +501,8 @@ SKIP_SOUTH_TESTS = True
 # Set up environment variable so Kerberos libraries look at our private
 # ticket cache
 os.environ['KRB5CCNAME'] = desktop.conf.KERBEROS.CCACHE_PATH.get()
+if not os.getenv('SERVER_SOFTWARE'):
+  os.environ['SERVER_SOFTWARE'] = 'apache'
 
 # If Hue is configured to use a CACERTS truststore, make sure that the
 # REQUESTS_CA_BUNDLE is set so that we can use it when we make external requests.
@@ -463,12 +519,73 @@ if desktop.conf.MEMORY_PROFILER.get():
   MEMORY_PROFILER = hpy()
   MEMORY_PROFILER.setrelheap()
 
+# Instrumentation
+if desktop.conf.INSTRUMENTATION.get():
+  gc.set_debug(gc.DEBUG_UNCOLLECTABLE | gc.DEBUG_OBJECTS)
 
 if not desktop.conf.DATABASE_LOGGING.get():
   def disable_database_logging():
-    from django.db.backends import BaseDatabaseWrapper
-    from django.db.backends.util import CursorWrapper
+    from django.db.backends.base.base import BaseDatabaseWrapper
+    from django.db.backends.utils import CursorWrapper
 
     BaseDatabaseWrapper.make_debug_cursor = lambda self, cursor: CursorWrapper(cursor, self)
 
   disable_database_logging()
+
+############################################################
+# Searching saved documents in Oracle returns following error:
+#   DatabaseError: ORA-06502: PL/SQL: numeric or value error: character string buffer too small
+# This is caused by DBMS_LOB.SUBSTR(%s, 4000) in Django framework django/db/backends/oracle/base.py
+# Django has a ticket for this issue but unfixed: https://code.djangoproject.com/ticket/11580.
+# Buffer size 4000 limit the length of field equals or less than 2000 characters.
+#
+# For performance reasons and to avoid searching in huge fields, we also truncate to a max length
+DOCUMENT2_SEARCH_MAX_LENGTH = 2000
+
+DEBUG_TOOLBAR_PATCH_SETTINGS = False
+
+def show_toolbar(request):
+  # Here can be used to decide if showing toolbar bases on request object:
+  #   For example, limit IP address by checking request.META['REMOTE_ADDR'], which can avoid setting INTERNAL_IPS.
+  list_allowed_users = desktop.conf.DJANGO_DEBUG_TOOL_USERS.get()
+  is_user_allowed = list_allowed_users[0] == '' or request.user.username in list_allowed_users
+  return DEBUG and desktop.conf.ENABLE_DJANGO_DEBUG_TOOL.get() and is_user_allowed
+
+if DEBUG and desktop.conf.ENABLE_DJANGO_DEBUG_TOOL.get():
+  idx = MIDDLEWARE_CLASSES.index('desktop.middleware.ClusterMiddleware')
+  MIDDLEWARE_CLASSES.insert(idx + 1, 'debug_panel.middleware.DebugPanelMiddleware')
+
+  INSTALLED_APPS += (
+      'debug_toolbar',
+      'debug_panel',
+  )
+
+  DEBUG_TOOLBAR_PANELS = [
+      'debug_toolbar.panels.versions.VersionsPanel',
+      'debug_toolbar.panels.timer.TimerPanel',
+      'debug_toolbar.panels.settings.SettingsPanel',
+      'debug_toolbar.panels.headers.HeadersPanel',
+      'debug_toolbar.panels.request.RequestPanel',
+      'debug_toolbar.panels.sql.SQLPanel',
+      'debug_toolbar.panels.staticfiles.StaticFilesPanel',
+      'debug_toolbar.panels.templates.TemplatesPanel',
+      'debug_toolbar.panels.cache.CachePanel',
+      'debug_toolbar.panels.signals.SignalsPanel',
+      'debug_toolbar.panels.logging.LoggingPanel',
+      'debug_toolbar.panels.redirects.RedirectsPanel',
+  ]
+
+  DEBUG_TOOLBAR_CONFIG = {
+      'RESULTS_CACHE_SIZE': 200,
+      'SHOW_TOOLBAR_CALLBACK': show_toolbar
+  }
+
+  CACHES.update({
+      'debug-panel': {
+          'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
+          'LOCATION': '/var/tmp/debug-panel-cache',
+          'OPTIONS': {
+              'MAX_ENTRIES': 10000
+          }
+      }
+  })

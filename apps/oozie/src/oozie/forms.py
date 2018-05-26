@@ -51,6 +51,11 @@ class ParameterForm(forms.Form):
       'hue-id-w',
       'hue-id-c',
       'hue-id-b',
+      'hue-id-b',
+      'security_enabled',
+      'oozie.wf.rerun.failnodes',
+      'dryrun',
+      'send_email'
   )
 
   RERUN_HIDE_PARAMETERS = (
@@ -343,7 +348,7 @@ class CoordinatorForm(forms.ModelForm):
   class Meta:
     model = Coordinator
     exclude = ('owner', 'deployment_dir')
-    if ENABLE_CRON_SCHEDULING.get():
+    if hasattr(ENABLE_CRON_SCHEDULING, 'get') and ENABLE_CRON_SCHEDULING.get():
         exclude += ('frequency_number', 'frequency_unit')
     widgets = {
       'description': forms.TextInput(attrs={'class': 'span5'}),
@@ -363,7 +368,7 @@ class CoordinatorForm(forms.ModelForm):
       if workflow.can_read(user):
         workflows.append(workflow.id)
     qs = Workflow.objects.filter(id__in=workflows)
-    self.fields['workflow'].queryset = qs
+    self.fields['coordinatorworkflow'].queryset = qs
 
 
 class ImportCoordinatorForm(CoordinatorForm):
@@ -409,8 +414,8 @@ class DataInputForm(forms.ModelForm):
     del kwargs['coordinator']
     super(DataInputForm, self).__init__(*args, **kwargs)
     self.fields['dataset'].queryset = Dataset.objects.filter(coordinator=coordinator)
-    if coordinator.workflow:
-      self.fields['name'].widget = forms.Select(choices=((param, param) for param in set(coordinator.workflow.find_parameters())))
+    if coordinator.coordinatorworkflow:
+      self.fields['name'].widget = forms.Select(choices=((param, param) for param in set(coordinator.coordinatorworkflow.find_parameters())))
 
 
 class DataOutputForm(forms.ModelForm):
@@ -423,8 +428,8 @@ class DataOutputForm(forms.ModelForm):
     del kwargs['coordinator']
     super(DataOutputForm, self).__init__(*args, **kwargs)
     self.fields['dataset'].queryset = Dataset.objects.filter(coordinator=coordinator)
-    if coordinator.workflow:
-      self.fields['name'].widget = forms.Select(choices=((param, param) for param in set(coordinator.workflow.find_parameters())))
+    if coordinator.coordinatorworkflow:
+      self.fields['name'].widget = forms.Select(choices=((param, param) for param in set(coordinator.coordinatorworkflow.find_parameters())))
 
 
 _node_type_TO_FORM_CLS = {
@@ -446,9 +451,11 @@ _node_type_TO_FORM_CLS = {
 
 class RerunForm(forms.Form):
   skip_nodes = forms.MultipleChoiceField(required=False)
+  return_json = forms.BooleanField(required=False, widget=forms.HiddenInput)
 
   def __init__(self, *args, **kwargs):
     oozie_workflow = kwargs.pop('oozie_workflow')
+    return_json = kwargs.pop('return_json', None)
 
     # Build list of skip nodes
     decisions = filter(lambda node: node.type == 'switch', oozie_workflow.get_control_flow_actions())
@@ -465,18 +472,26 @@ class RerunForm(forms.Form):
     self.fields['skip_nodes'].choices = skip_nodes
     self.fields['skip_nodes'].initial = initial_skip_nodes
 
+    if return_json is not None:
+      self.fields['return_json'].initial = return_json
+
 
 class RerunCoordForm(forms.Form):
   refresh = forms.BooleanField(initial=True, required=False, help_text=_t("Used to indicate if user wants to refresh an action's input and output events"))
   nocleanup = forms.BooleanField(initial=True, required=False, help_text=_t('Used to indicate if user wants to cleanup output events for given rerun actions'))
   actions = forms.MultipleChoiceField(required=True)
+  return_json = forms.BooleanField(required=False, widget=forms.HiddenInput)
 
   def __init__(self, *args, **kwargs):
     oozie_coordinator = kwargs.pop('oozie_coordinator')
+    return_json = kwargs.pop('return_json', None)
 
     super(RerunCoordForm, self).__init__(*args, **kwargs)
 
     self.fields['actions'].choices = [(action.actionNumber, action.title) for action in reversed(oozie_coordinator.get_working_actions())]
+
+    if return_json is not None:
+      self.fields['return_json'].initial = return_json
 
 
 class RerunBundleForm(forms.Form):

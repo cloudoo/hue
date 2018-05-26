@@ -647,6 +647,9 @@ function BeeswaxViewModel(server, apiHelper) {
           if (typeof window.console !== 'undefined') {
             console.error(data.message);
           }
+          if (data.log) {
+            self.applyLogs(data.log);
+          }
         } else {
           $(document).trigger('watched.query', data);
         }
@@ -1056,10 +1059,4 @@ function clickHard(el) {
       clearInterval(timer);
     }
   }, 100);
-}
-
-function logGA(page) {
-  if (typeof trackOnGA == 'function'){
-    trackOnGA('beeswax/' + page);
-  }
 }

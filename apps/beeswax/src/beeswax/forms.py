@@ -20,6 +20,7 @@ from django.utils.translation import ugettext as _, ugettext_lazy as _t
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.forms import NumberInput
 
+from aws.s3 import S3_ROOT, S3A_ROOT
 from desktop.lib.django_forms import simple_formset_factory, DependencyAwareForm
 from desktop.lib.django_forms import ChoiceOrOtherField, MultiForm, SubmitButton
 from filebrowser.forms import PathField
@@ -266,6 +267,9 @@ class CreateTableForm(DependencyAwareForm):
   use_default_location = forms.BooleanField(required=False, initial=True, label=_t("Use default location."))
   external_location = forms.CharField(required=False, help_text=_t("Path to HDFS directory or file of table data."))
 
+  # Table Properties
+  skip_header = forms.BooleanField(required=False, initial=False, label=_t("Use header row for column names?"))
+
   dependencies += [
     ("use_default_location", False, "external_location")
   ]
@@ -302,15 +306,23 @@ def _clean_terminator(val):
 
 class CreateByImportFileForm(forms.Form):
   """Form for step 1 (specifying file) of the import wizard"""
+
   # Basic Data
   name = common.HiveIdentifierField(label=_t("Table Name"), required=True)
   comment = forms.CharField(label=_t("Description"), required=False)
 
   # File info
-  path = PathField(label=_t("Input File"))
-  do_import = forms.BooleanField(required=False, initial=True,
-                          label=_t("Import data from file"),
-                          help_text=_t("Automatically load this file into the table after creation."))
+  path = PathField(label=_t("Input File or Directory"))
+  load_data = forms.ChoiceField(required=True,
+    choices=[
+      ("IMPORT", _("Import data")),
+      ("EXTERNAL", _("Create External Table")),
+      ("EMPTY", ("Leave Empty")),
+    ],
+    help_text=_t("Select 'import' to load data from the file into the Hive warehouse directory after creation. "
+       "Select 'external' if the table is an external table and the data files should not be moved. " +
+       "Select 'empty' if the file should only be used to define the table schema but not loaded (table will be empty).")
+  )
 
   def __init__(self, *args, **kwargs):
     self.db = kwargs.pop('db', None)
@@ -318,6 +330,14 @@ class CreateByImportFileForm(forms.Form):
 
   def clean_name(self):
     return _clean_tablename(self.db, self.cleaned_data['name'])
+
+  def clean_path(self):
+    path = self.cleaned_data['path']
+    if path.lower().startswith(S3_ROOT):
+      path = path.lower().replace(S3_ROOT, S3A_ROOT)
+    if not path.endswith('/'):
+      path = '%s/' % path
+    return path
 
 
 class CreateByImportDelimForm(forms.Form):

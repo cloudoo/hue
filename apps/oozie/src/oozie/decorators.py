@@ -37,8 +37,8 @@ def check_document_access_permission():
       doc_id = uuid = doc2 = None
 
       try:
-        if request.REQUEST.get('workflow'):
-          workflow_id = request.REQUEST.get('workflow')
+        if request.GET.get('workflow'):
+          workflow_id = request.GET.get('workflow')
           if workflow_id.isdigit():
             doc_id = workflow_id
           else:
@@ -93,7 +93,10 @@ def check_document_modify_permission():
 
         try:
           doc2 = Document2.objects.get(id=job['id'])
-          doc2.doc.get().can_write_or_exception(request.user)
+          if USE_NEW_EDITOR.get():
+              doc2.can_write_or_exception(request.user)
+          else:
+              doc2.doc.get().can_write_or_exception(request.user)
         except Document.DoesNotExist:
           raise PopupException(_('Job %(id)s does not exist') % {'id': doc_id})
 

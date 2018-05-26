@@ -179,7 +179,7 @@ def massaged_documents_for_json(documents, user):
 
   for document in documents:
     try:
-      url = document.content_object.get_absolute_url()
+      url = document.content_object and hasattr(document.content_object, 'get_absolute_url') and document.content_object.get_absolute_url() or ''
     except:
       LOG.exception('failed to get absolute url')
       # If app of document is disabled
@@ -195,8 +195,15 @@ def get_document(request):
   doc_id = request.GET.get('id', '')
 
   if doc_id.isdigit():
-    doc = Document.objects.get(id=doc_id)
-    response = massage_doc_for_json(doc, request.user)
+    doc = None
+    try:
+      doc = Document.objects.get(id=doc_id)
+    except Document.DoesNotExist:
+      pass
+    if doc and doc.can_read(request.user):
+      response = massage_doc_for_json(doc, request.user)
+    else:
+      response['message'] = _('get_document requires read priviledge or document does not exist for: %s') % doc_id
   else:
     response['message'] = _('get_document requires an id integer parameter: %s') % doc_id
 
@@ -236,10 +243,10 @@ def add_tag(request):
   response = {'status': -1, 'message': ''}
 
   try:
-    validstatus = valid_project(name=request.POST['name'])
+    validstatus = valid_project(name=request.POST.get('name'))
     if validstatus:
-      tag = DocumentTag.objects.create_tag(request.user, request.POST['name'])
-      response['name'] = request.POST['name']
+      tag = DocumentTag.objects.create_tag(request.user, request.POST.get('name'))
+      response['name'] = request.POST.get('name')
       response['id'] = tag.id
       response['docs'] = []
       response['owner'] = request.user.username
@@ -258,7 +265,7 @@ def add_tag(request):
 def tag(request):
   response = {'status': -1, 'message': ''}
 
-  request_json = json.loads(request.POST['data'])
+  request_json = json.loads(request.POST.get('data'))
   try:
     tag = DocumentTag.objects.tag(request.user, request_json['doc_id'], request_json.get('tag'), request_json.get('tag_id'))
     response['tag_id'] = tag.id
@@ -275,7 +282,7 @@ def tag(request):
 def update_tags(request):
   response = {'status': -1, 'message': ''}
 
-  request_json = json.loads(request.POST['data'])
+  request_json = json.loads(request.POST.get('data'))
   try:
     doc = DocumentTag.objects.update_tags(request.user, request_json['doc_id'], request_json['tag_ids'])
     response['doc'] = massage_doc_for_json(doc, request.user)
@@ -293,7 +300,7 @@ def remove_tag(request):
   response = {'status': -1, 'message': _('Error')}
 
   try:
-    DocumentTag.objects.delete_tag(request.POST['tag_id'], request.user)
+    DocumentTag.objects.delete_tag(request.POST.get('tag_id'), request.user)
     response['message'] = _('Project removed!')
     response['status'] = 0
   except KeyError, e:
@@ -308,8 +315,9 @@ def remove_tag(request):
 def update_permissions(request):
   response = {'status': -1, 'message': _('Error')}
 
-  data = json.loads(request.POST['data'])
-  doc_id = request.POST['doc_id']
+  data = json.loads(request.POST.get('data', {}))
+
+  doc_id = request.POST.get('doc_id')
   try:
     doc = Document.objects.get_doc_for_writing(doc_id, request.user)
     doc.sync_permissions(data)

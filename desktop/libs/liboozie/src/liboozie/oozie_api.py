@@ -32,6 +32,7 @@ LOG = logging.getLogger(__name__)
 DEFAULT_USER = DEFAULT_USER.get()
 API_VERSION = 'v1' # Overridden to v2 for SLA
 
+
 _XML_CONTENT_TYPE = 'application/xml;charset=UTF-8'
 
 
@@ -39,6 +40,7 @@ def get_oozie(user, api_version=API_VERSION):
   oozie_url = OOZIE_URL.get()
   secure = SECURITY_ENABLED.get()
   ssl_cert_ca_verify = SSL_CERT_CA_VERIFY.get()
+
   return OozieApi(oozie_url, user, security_enabled=secure, api_version=api_version, ssl_cert_ca_verify=ssl_cert_ca_verify)
 
 
@@ -87,7 +89,7 @@ class OozieApi(object):
 
     return defaults
 
-  VALID_JOB_FILTERS = ('name', 'user', 'group', 'status', 'startcreatedtime')
+  VALID_JOB_FILTERS = ('name', 'user', 'group', 'status', 'startcreatedtime', 'text')
   VALID_LOG_FILTERS = set(('recent', 'limit', 'loglevel', 'text'))
 
   def get_jobs(self, jobtype, offset=None, cnt=None, filters=None):
@@ -192,6 +194,15 @@ class OozieApi(object):
       filter_list.append('%s=%s' % (key, val))
     params['logfilter'] = ';'.join(filter_list)
     return self._root.get('job/%s' % (jobid,), params)
+
+
+  def get_job_graph(self, jobid, format='svg'):
+    params = self._get_params()
+    params['show'] = 'graph'
+    params['show-kill'] = 'true'
+    params['format'] = format
+    svg_data = self._root.get('job/%s' % (jobid,), params)
+    return svg_data
 
 
   def get_job_status(self, jobid):

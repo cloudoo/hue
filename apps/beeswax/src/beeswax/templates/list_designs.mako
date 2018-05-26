@@ -26,7 +26,7 @@
 <%namespace name="comps" file="beeswax_components.mako" />
 <%namespace name="layout" file="layout.mako" />
 
-${ commonheader(_('Saved Queries'), app_name, user) | n,unicode }
+${ commonheader(_('Saved Queries'), app_name, user, request) | n,unicode }
 
 ${ layout.menubar(section='saved queries') }
 
@@ -89,32 +89,34 @@ ${ layout.menubar(section='saved queries') }
       </tr>
     </thead>
     <tbody>
-      % for design in page.object_list:
-        <%
-          may_edit = design.doc.get().can_write(user)
-        %>
-      <tr>
-        <td data-row-selector-exclude="true">
-          <div class="hueCheckbox savedCheck fa"
-              data-edit-url="${ url(app_name + ':execute_design', design_id=design.id) }"
-              data-history-url="${ url(app_name + ':list_query_history') }?q-design_id=${design.id}"
-            % if may_edit:
-              data-delete-name="${ design.id }"
-            % endif
-            data-clone-url="${ url(app_name + ':clone_design', design_id=design.id) }" data-row-selector-exclude="true"></div>
-        </td>
-        <td>
-          <a href="${ url(app_name + ':execute_design', design_id=design.id) }" data-row-selector="true">${ force_unicode(design.name) }</a>
-        </td>
-        <td>
-        % if design.desc:
-          ${ force_unicode(design.desc) }
-        % endif
-        </td>
-        <td>${ design.owner.username }</td>
-        <td data-sort-value="${time.mktime(design.mtime.timetuple())}"></td>
-      </tr>
-      % endfor
+      % if page:
+        % for design in page.object_list:
+          <%
+            may_edit = design.doc.get().can_write(user)
+          %>
+        <tr>
+          <td data-row-selector-exclude="true">
+            <div class="hueCheckbox savedCheck fa"
+                data-edit-url="${ url(app_name + ':execute_design', design_id=design.id) }"
+                data-history-url="${ url(app_name + ':list_query_history') }?q-design_id=${design.id}"
+              % if may_edit:
+                data-delete-name="${ design.id }"
+              % endif
+              data-clone-url="${ url(app_name + ':clone_design', design_id=design.id) }" data-row-selector-exclude="true"></div>
+          </td>
+          <td>
+            <a href="${ url(app_name + ':execute_design', design_id=design.id) }" data-row-selector="true">${ force_unicode(design.name) }</a>
+          </td>
+          <td>
+          % if design.desc:
+            ${ force_unicode(design.desc) }
+          % endif
+          </td>
+          <td>${ design.owner.username }</td>
+          <td data-sort-value="${time.mktime(design.mtime.timetuple())}"></td>
+        </tr>
+        % endfor
+      % endif
     </tbody>
   </table>
     <div class="card-body">
@@ -130,8 +132,8 @@ ${ layout.menubar(section='saved queries') }
     ${ csrf_token(request) | n,unicode }
     <input type="hidden" name="skipTrash" id="skipTrash" value="false"/>
     <div class="modal-header">
-      <a href="#" class="close" data-dismiss="modal">&times;</a>
-      <h3 id="deleteQueryMessage">${_('Confirm action')}</h3>
+      <button type="button" class="close" data-dismiss="modal" aria-label="${ _('Close') }"><span aria-hidden="true">&times;</span></button>
+      <h2 id="deleteQueryMessage" class="modal-title">${ _('Confirm action') }</h2>
     </div>
     <div class="modal-footer">
       <input type="button" class="btn" data-dismiss="modal" value="${_('Cancel')}" />
@@ -143,9 +145,7 @@ ${ layout.menubar(section='saved queries') }
   </form>
 </div>
 
-<script src="${ static('desktop/ext/js/knockout.min.js') }" type="text/javascript" charset="utf-8"></script>
-
-<script type="text/javascript" charset="utf-8">
+<script type="text/javascript">
   $(document).ready(function () {
     var viewModel = {
         availableSavedQueries : ko.observableArray(${ designs_json | n }),

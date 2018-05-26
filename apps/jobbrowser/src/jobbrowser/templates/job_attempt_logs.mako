@@ -20,7 +20,7 @@
 
 <%namespace name="comps" file="jobbrowser_components.mako" />
 
-${ commonheader(_('Job Attempt: %(attempt_index)s') % {'attempt_index': attempt_index}, "jobbrowser", user) | n,unicode }
+${ commonheader(_('Job Attempt: %(attempt_index)s') % {'attempt_index': attempt_index}, "jobbrowser", user, request) | n,unicode }
 ${ comps.menubar() }
 
 <div class="container-fluid">
@@ -29,7 +29,7 @@ ${ comps.menubar() }
       <div class="sidebar-nav" style="padding-top: 0">
         <ul class="nav nav-list">
           <li class="nav-header">${ _('Attempt ID') }</li>
-          <li class="white truncate" title="${ attempt_index }">${ attempt_index }</li>
+          <li class="white truncate-text" title="${ attempt_index }">${ attempt_index }</li>
         </ul>
       </div>
     </div>
@@ -51,22 +51,19 @@ ${ comps.menubar() }
             <div class="tab-content">
               <div class="tab-pane active" id="stdout">
                 <pre id="stdout-container">
-                  <!--[if !IE]> --><i class="fa fa-spinner fa-spin"></i><!-- <![endif]-->
-                  <!--[if IE]><img src="${ static('desktop/art/spinner.gif') }" /><![endif]-->
+                  <i class="fa fa-spinner fa-spin"></i>
                 </pre>
               </div>
 
               <div class="tab-pane" id="stderr">
                 <pre id="stderr-container">
-                  <!--[if !IE]> --><i class="fa fa-spinner fa-spin"></i><!-- <![endif]-->
-                  <!--[if IE]><img src="${ static('desktop/art/spinner.gif') }" /><![endif]-->
+                  <i class="fa fa-spinner fa-spin"></i>
                 </pre>
               </div>
 
               <div class="tab-pane" id="syslog">
                 <pre id="syslog-container">
-                  <!--[if !IE]> --><i class="fa fa-spinner fa-spin"></i><!-- <![endif]-->
-                  <!--[if IE]><img src="${ static('desktop/art/spinner.gif') }" /><![endif]-->
+                  <i class="fa fa-spinner fa-spin"></i>
                 </pre>
               </div>
             </div>
@@ -79,7 +76,7 @@ ${ comps.menubar() }
 
 <script src="${ static('jobbrowser/js/utils.js') }" type="text/javascript" charset="utf-8"></script>
 
-<script type="text/javascript" charset="utf-8">
+<script type="text/javascript">
   $(document).ready(function () {
     enableResizeLogs();
 
@@ -116,7 +113,7 @@ ${ comps.menubar() }
     initLogsElement($("#stderr-container"));
 
     function refreshSyslogs() {
-      $.getJSON("${ url("jobbrowser.views.job_attempt_logs_json", job=job.jobId, attempt_index=attempt_index, name='syslog', offset=log_offset) }", function (data) {
+      $.getJSON("${ url("job_attempt_logs_json", job=job.jobId, attempt_index=attempt_index, name='syslog', offset=log_offset) }", function (data) {
         if (data && data.log) {
           appendAndScroll($("#syslog-container"), data.log);
           window.setTimeout(refreshSyslogs, 5000);
@@ -125,7 +122,7 @@ ${ comps.menubar() }
     }
 
     function refreshStdout() {
-      $.getJSON("${ url("jobbrowser.views.job_attempt_logs_json", job=job.jobId, attempt_index=attempt_index, name='stdout', offset=log_offset) }", function (data) {
+      $.getJSON("${ url("job_attempt_logs_json", job=job.jobId, attempt_index=attempt_index, name='stdout', offset=log_offset) }", function (data) {
         if (data && data.log) {
           appendAndScroll($("#stdout-container"), data.log);
           window.setTimeout(refreshStdout, 5000);
@@ -134,7 +131,7 @@ ${ comps.menubar() }
     }
 
     function refreshStderr() {
-      $.getJSON("${ url("jobbrowser.views.job_attempt_logs_json", job=job.jobId, attempt_index=attempt_index, name='stderr', offset=log_offset) }", function (data) {
+      $.getJSON("${ url("job_attempt_logs_json", job=job.jobId, attempt_index=attempt_index, name='stderr', offset=log_offset) }", function (data) {
         if (data && data.log) {
           appendAndScroll($("#stderr-container"), data.log);
           window.setTimeout(refreshStderr, 5000);

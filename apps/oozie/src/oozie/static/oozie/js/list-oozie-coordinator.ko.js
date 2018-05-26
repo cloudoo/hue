@@ -14,19 +14,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-(function (root, factory) {
-  if (typeof define === "function" && define.amd) {
-    define([
-      'knockout',
-      'knockout-mapping',
-      'ko.charts'
-    ], factory);
-  } else {
-    root.RunningCoordinatorModel = factory(ko);
-  }
-}(this, function (ko) {
+var RunningCoordinatorModel = (function () {
 
   var RunningCoordinatorModel = function (actions) {
+
     var self = this;
 
     self.Action = function (action) {
@@ -57,9 +48,15 @@
 
     self.isLoading = ko.observable(true);
 
-    self.actions = ko.observableArray(ko.utils.arrayMap(actions), function (action) {
+    self.actions = ko.observableArray(ko.utils.arrayMap(actions, function (action) {
       return new self.Action(action);
-    });
+    }));
+
+    self.setActions = function (actions) {
+      self.actions(ko.utils.arrayMap(actions, function (action) {
+        return new self.Action(action);
+      }));
+    }
 
     self.allSelected = ko.observable(false);
 
@@ -203,4 +200,4 @@
   };
 
   return RunningCoordinatorModel;
-}));
+})();

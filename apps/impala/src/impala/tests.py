@@ -23,17 +23,18 @@ from nose.plugins.skip import SkipTest
 from nose.tools import assert_true, assert_equal, assert_false
 
 from django.contrib.auth.models import User
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 import desktop.conf as desktop_conf
 from desktop.lib.django_test_util import make_logged_in_client
 from desktop.lib.test_utils import add_to_group
 from desktop.models import Document
-from hadoop import cluster
 from hadoop.pseudo_hdfs4 import get_db_prefix, is_live_cluster
 
-from beeswax import hive_site
+from beeswax import data_export
 from beeswax.design import hql_query
+
+from beeswax.data_export import download
 from beeswax.models import SavedQuery, QueryHistory
 from beeswax.server import dbms
 from beeswax.test_base import get_query_server_config, wait_for_query_to_finish, fetch_query_result_data
@@ -41,7 +42,6 @@ from beeswax.tests import _make_query
 
 from impala import conf
 from impala.dbms import ImpalaDbms
-from impala.server import ImpalaServerClient
 
 
 LOG = logging.getLogger(__name__)
@@ -81,23 +81,23 @@ class TestMockedImpala:
     user = User.objects.get(username='test')
 
     response = self.client.get("/impala/list_designs")
-    assert_equal(len(response.context['page'].object_list), 0)
+    assert_equal(len(response.context[0]['page'].object_list), 0)
 
     try:
       beewax_query = create_saved_query('beeswax', user)
       response = self.client.get("/impala/list_designs")
-      assert_equal(len(response.context['page'].object_list), 0)
+      assert_equal(len(response.context[0]['page'].object_list), 0)
 
       impala_query = create_saved_query('impala', user)
       response = self.client.get("/impala/list_designs")
-      assert_equal(len(response.context['page'].object_list), 1)
+      assert_equal(len(response.context[0]['page'].object_list), 1)
 
       # Test my query page
-      QueryHistory.objects.create(owner=user, design=impala_query, query='', last_state=QueryHistory.STATE.available.index)
+      QueryHistory.objects.create(owner=user, design=impala_query, query='', last_state=QueryHistory.STATE.available.value)
 
       resp = self.client.get('/impala/my_queries')
-      assert_equal(len(resp.context['q_page'].object_list), 1)
-      assert_equal(resp.context['h_page'].object_list[0].design.name, 'create_saved_query')
+      assert_equal(len(resp.context[0]['q_page'].object_list), 1)
+      assert_equal(resp.context[0]['h_page'].object_list[0].design.name, 'create_saved_query')
     finally:
       if beewax_query is not None:
         beewax_query.delete()
@@ -211,6 +211,47 @@ class TestImpalaIntegration:
     resp = self.client.post(reverse('impala:api_cancel_query', kwargs={'query_history_id': query_history.id}))
     content = json.loads(resp.content)
     assert_equal(0, content['status'])
+
+
+  def test_data_download(self):
+    hql = 'SELECT * FROM tweets %(limit)s'
+
+    FETCH_SIZE = data_export.FETCH_SIZE
+    data_export.FETCH_SIZE = 2 # Decrease fetch size to validate last fetch logic
+
+    try:
+      query = hql_query(hql % {'limit': ''})
+
+      handle = self.db.execute_and_wait(query)
+      # Get the result in csv. Should have 5 + 1 header row.
+      csv_resp = download(handle, 'csv', self.db)
+      csv_content = ''.join(csv_resp.streaming_content)
+      assert_equal(len(csv_content.strip().split('\n')), 5 + 1)
+
+
+      query = hql_query(hql % {'limit': 'LIMIT 0'})
+
+      handle = self.db.execute_and_wait(query)
+      csv_resp = download(handle, 'csv', self.db)
+      csv_content = ''.join(csv_resp.streaming_content)
+      assert_equal(len(csv_content.strip().split('\n')), 1)
+
+      query = hql_query(hql % {'limit': 'LIMIT 1'})
+
+      handle = self.db.execute_and_wait(query)
+      csv_resp = download(handle, 'csv', self.db)
+      csv_content = ''.join(csv_resp.streaming_content)
+      assert_equal(len(csv_content.strip().split('\n')), 1 + 1)
+
+      query = hql_query(hql % {'limit': 'LIMIT 2'})
+
+      handle = self.db.execute_and_wait(query)
+      csv_resp = download(handle, 'csv', self.db)
+      csv_content = ''.join(csv_resp.streaming_content)
+      assert_equal(len(csv_content.strip().split('\n')), 1 + 2)
+    finally:
+      data_export.FETCH_SIZE = FETCH_SIZE
+
 
   def test_explain(self):
     QUERY = """

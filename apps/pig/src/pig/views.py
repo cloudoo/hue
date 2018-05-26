@@ -18,10 +18,11 @@
 import json
 import logging
 
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.utils.translation import ugettext as _
 from django.views.decorators.csrf import ensure_csrf_cookie
 
+from desktop.conf import IS_HUE_4
 from desktop.lib.django_util import JsonResponse, render
 from desktop.lib.exceptions_renderable import PopupException
 from desktop.lib.rest.http_client import RestException
@@ -48,6 +49,7 @@ def app(request):
 
   return render('app.mako', request, {
     'autocomplete_base_url': autocomplete_base_url,
+    'is_hue_4': IS_HUE_4.get()
   })
 
 
@@ -244,7 +246,7 @@ def install_examples(request):
     result['message'] = _('A POST request is required.')
   else:
     try:
-      pig_setup.Command().handle_noargs()
+      pig_setup.Command().handle()
       result['status'] = 0
     except Exception, e:
       LOG.exception(e)

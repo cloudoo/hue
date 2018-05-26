@@ -32,7 +32,7 @@ nv.models.multiBarWithBrushChart = function() {
     , yAxis = nv.models.axis()
     , legend = nv.models.legend()
     , controls = nv.models.legend()
-    , brush = d3.svg.brush()
+    , brush = d3v3.svg.brush()
     ;
 
   var margin = {top: 30, right: 20, bottom: 50, left: 60}
@@ -48,24 +48,36 @@ nv.models.multiBarWithBrushChart = function() {
     , staggerLabels = false
     , rotateLabels = 0
     , tooltips = true
-    , tooltip = function(key, x, y, e, graph) {
-        return '<h3>' + key + '</h3>' +
-               '<p>' +  y + ' on ' + x + '</p>'
-      }
+    , tooltip = null
+    , minTickWidth = 60
+    , tooltipSingle = function(value) {
+      return '<h3>' + hueUtils.htmlEncode(value.key) + '</h3>' +
+        '<p>' + hueUtils.htmlEncode(value.y) + ' on ' + hueUtils.htmlEncode(value.x) + '</p>';
+    }
+    , tooltipMultiple = function (values) {
+      return values.map(function (value) {
+          return '<p><b>' + hueUtils.htmlEncode(value.key) + '</b>: ' +  hueUtils.htmlEncode(value.y) + '</p>';
+        }).join("") + '<h3>' + hueUtils.htmlEncode(values[0] && values[0].x) + '</h3>';
+    }
     , x //can be accessed via chart.xScale()
     , y //can be accessed via chart.yScale()
-    , state = { stacked: false }
+    , getX = function(d) { return d.x } // accessor to get the x value
+    , getY = function(d) { return d.y } // accessor to get the y value
+    , state = { stacked: false, selectionEnabled: false }
     , defaultState = null
     , noData = "No Data Available."
-    , dispatch = d3.dispatch('tooltipShow', 'tooltipHide', 'stateChange', 'changeState', 'brush')
+    , dispatch = d3v3.dispatch('tooltipShow', 'tooltipHide', 'stateChange', 'changeState', 'brush')
     , controlWidth = function() { return showControls ? (selectionHidden ? 240 : 300) : 0 }
+    , legendWidth = 175
     , transitionDuration = 250
     , extent
     , brushExtent = null
     , selectionEnabled = false
     , selectionHidden = false
+    , stackedHidden = false
     , onSelectRange = null
     , onStateChange = null
+    , onLegendChange = null
     , onChartUpdate = null
     , selectBars = null
     ;
@@ -78,11 +90,11 @@ nv.models.multiBarWithBrushChart = function() {
     .tickPadding(7)
     .highlightZero(true)
     .showMaxMin(false)
-    .tickFormat(function(d) { return d })
+    .tickFormat(function(d) { return d; })
     ;
   yAxis
     .orient((rightAlignYAxis) ? 'right' : 'left')
-    .tickFormat(d3.format(',.1f'))
+    .tickFormat(d3v3.format(',.1f'))
     ;
 
   controls.updateState(false);
@@ -94,11 +106,24 @@ nv.models.multiBarWithBrushChart = function() {
   //------------------------------------------------------------
 
   var showTooltip = function(e, offsetElement) {
-    var left = ($.browser.msie && $.browser.version.indexOf("9.") > -1) ? e.e.clientX : e.e.layerX,
+    var values;
+    if (!tooltip) {
+      values = (e.list || [e]).map(function (e) {
+        var x = xAxis.tickFormat()(multibar.x()(e.point, e.pointIndex)),
+        y = yAxis.tickFormat()(multibar.y()(e.point, e.pointIndex));
+        return {x: x, y: y, key: e.series.key};
+      });
+    } else {
+      values = tooltip((e.list || [e]).map(function (e) {
+        var x = multibar.x()(e.point, e.pointIndex),
+        y = multibar.y()(e.point, e.pointIndex);
+        return {x: x, y: y, key: e.series.key};
+      }));
+    }
+
+    var left = e.pos[0] + ( offsetElement.offsetLeft || 0 ),
         top = e.pos[1] + ( offsetElement.offsetTop || 0),
-        x = xAxis.tickFormat()(multibar.x()(e.point, e.pointIndex)),
-        y = yAxis.tickFormat()(multibar.y()(e.point, e.pointIndex)),
-        content = tooltip(e.series.key, x, y, e, chart);
+        content = values.length > 1 && tooltipMultiple(values) || tooltipSingle(values[0]);
 
     nv.tooltip.show([left, top], content, e.value < 0 ? 'n' : 's', null, offsetElement);
   };
@@ -108,20 +133,25 @@ nv.models.multiBarWithBrushChart = function() {
 
   function chart(selection) {
     selection.each(function(data) {
-      var container = d3.select(this),
+      var container = d3v3.select(this),
           that = this;
 
       var availableWidth = (width  || parseInt(container.style('width')) || 960)
                              - margin.left - margin.right,
+          availableChartWidth = Math.max(availableWidth - legendWidth, 0),
           availableHeight = (height || parseInt(container.style('height')) || 400)
                              - margin.top - margin.bottom;
 
+      chart.recommendedTicks = function() {
+        return Math.floor(availableWidth / minTickWidth);
+      };
       chart.update = function() {
         container
             .transition()
             .duration(transitionDuration)
             .each("end", onChartUpdate)
             .call(chart);
+        filteredData = data.filter(function(series) { return !series.disabled; });
         if (selectionEnabled){
           enableBrush();
         }
@@ -188,10 +218,15 @@ nv.models.multiBarWithBrushChart = function() {
       var gEnter = wrap.enter().append('g').attr('class', 'nvd3 nv-wrap nv-multiBarWithLegend').append('g');
       var g = wrap.select('g');
 
+      gEnter.append("rect").style("opacity",0);
       gEnter.append('g').attr('class', 'nv-x nv-axis');
       gEnter.append('g').attr('class', 'nv-y nv-axis');
       gEnter.append('g').attr('class', 'nv-barsWrap');
-      gEnter.append('g').attr('class', 'nv-legendWrap');
+      // We put the legend in an another SVG to support scrolling
+      var legendDiv = d3.select(container.node().parentNode).select('div');
+      var legendSvg = legendDiv.select('svg').size() === 0 ? legendDiv.append('svg') : legendDiv.select('svg');
+      legendSvg.style('height', (data.length * 20 + 6) + 'px').selectAll('g').remove();
+      var legendG = legendSvg.append('g').attr('class', 'nvd3 nv-wrap nv-legendWrap');
       gEnter.append('g').attr('class', 'nv-controlsWrap');
 
 
@@ -202,28 +237,26 @@ nv.models.multiBarWithBrushChart = function() {
       // Legend
 
       if (showLegend) {
-        legend.width(availableWidth - controlWidth());
-
+        legend.width(legendWidth);
+        legend.height(availableHeight);
+        legend.rightAlign(false);
+        legend.margin({top: 5, right: 0, left: 10, bottom: 0});
         if (multibar.barColor())
           data.forEach(function(series,i) {
-            series.color = d3.rgb('#ccc').darker(i * 1.5).toString();
-          })
+            series.color = d3v3.rgb('#ccc').darker(i * 1.5).toString();
+          });
 
         try {
-          g.select('.nv-legendWrap')
-              .datum(data)
-              .call(legend);
+          legendG
+            .datum(data)
+            .call(legend)
+          .selectAll('text')
+          .append('title')
+          .text(function(d){
+            return d.key;
+          });
         }
         catch (e){}
-
-        if ( margin.top != legend.height()) {
-          margin.top = legend.height();
-          availableHeight = (height || parseInt(container.style('height')) || 400)
-                             - margin.top - margin.bottom;
-        }
-
-        g.select('.nv-legendWrap')
-            .attr('transform', 'translate(' + controlWidth() + ',' + (-margin.top) +')');
       }
 
       //------------------------------------------------------------
@@ -233,13 +266,14 @@ nv.models.multiBarWithBrushChart = function() {
       // Controls
 
       if (showControls) {
-        var controlsData = [
-          { key: LABELS.GROUPED, disabled: multibar.stacked() },
-          { key: LABELS.STACKED, disabled: !multibar.stacked() }
-        ];
+        var controlsData = [];
+        if (!stackedHidden) {
+          controlsData.push({ key: LABELS.GROUPED, disabled: multibar.stacked() });
+          controlsData.push({ key: LABELS.STACKED, disabled: !multibar.stacked() });
+        }
 
         if (! selectionHidden) {
-          controlsData.push({ key: LABELS.SELECT, disabled: !selectionEnabled, checkbox: true });
+          controlsData.push({ key: LABELS.SELECT, disabled: !selectionEnabled, checkbox: selectionEnabled });
         }
 
         controls.width(controlWidth()).color(['#444', '#444', '#444']);
@@ -256,25 +290,25 @@ nv.models.multiBarWithBrushChart = function() {
 
       if (rightAlignYAxis) {
           g.select(".nv-y.nv-axis")
-              .attr("transform", "translate(" + availableWidth + ",0)");
+              .attr("transform", "translate(" + availableChartWidth + ",0)");
       }
 
       //------------------------------------------------------------
       // Main Chart Component(s)
-
+      var filteredData = data.filter(function(series) { return !series.disabled; });
       multibar
-        .disabled(data.map(function(series) { return series.disabled }))
-        .width(availableWidth)
+        .disabled(data.map(function(series) { return series.disabled; }))
+        .width(availableChartWidth)
         .height(availableHeight)
         .color(data.map(function(d,i) {
           return d.color || color(d, i);
-        }).filter(function(d,i) { return !data[i].disabled }))
+        }).filter(function(d,i) { return !data[i].disabled; }));
 
       selectBars = multibar.selectBars;
 
-      var dataBars = data.filter(function(d) { return !d.disabled && d.bar });
+      var dataBars = data.filter(function(d) { return !d.disabled && d.bar; });
       var barsWrap = g.select('.nv-barsWrap')
-          .datum(data.filter(function(d) { return !d.disabled }))
+          .datum(data.filter(function(d) { return !d.disabled; }));
 
       barsWrap.transition().call(multibar);
 
@@ -282,24 +316,47 @@ nv.models.multiBarWithBrushChart = function() {
 
       //------------------------------------------------------------
       // Setup Brush
+      var overlay;
       if (selectionEnabled){
         enableBrush();
+        overlay = g.select('rect');
+        overlay.style('display', 'none');
+      } else {
+        disableBrush();
+        overlay = g.select('rect');
+        overlay
+        .style('display', 'inherit')
+        .attr('height', availableHeight)
+        .attr('width', availableWidth)
+        .on('mousemove', onMouseMove)
+        .on('mouseout', onMouseOut)
+        .on('click', onClick);
       }
 
 
       function enableBrush() {
-        if (g.selectAll('.nv-brush')[0].length == 0) {
-          gEnter.append('g').attr('class', 'nv-brushBackground');
-          gEnter.append('g').attr('class', 'nv-x nv-brush');
-          brush
-              .x(x)
-              .on('brush', onBrush)
-              .on('brushstart', onBrushStart)
-              .on('brushend', onBrushEnd)
+        if (!g) { // Can happen if the state change before the charts has been created.
+          return;
+        }
+        brush
+          .x(x)
+          .on('brush', onBrush)
+          .on('brushstart', onBrushStart)
+          .on('brushend', onBrushEnd);
+        if (chart.brushDomain) {
+          var brushExtent = fromSelection(chart.brushDomain).range;
+          brush.extent(brushExtent);
+        } else {
+          brush.clear();
+        }
+        var gBrush;
 
-          if (brushExtent) brush.extent(brushExtent);
+        if (g.selectAll('.nv-brush')[0].length == 0) {
+          g.append('g').attr('class', 'nv-brushBackground');
+          g.append('g').attr('class', 'nv-x nv-brush');
+
           var brushBG = g.select('.nv-brushBackground').selectAll('g')
-              .data([brushExtent || brush.extent()])
+              .data([chart.brushExtent || brush.extent()])
           var brushBGenter = brushBG.enter()
               .append('g');
 
@@ -315,14 +372,17 @@ nv.models.multiBarWithBrushChart = function() {
               .attr('y', 0)
               .attr('height', availableHeight);
 
-          var gBrush = g.select('.nv-x.nv-brush')
+          gBrush = g.select('.nv-x.nv-brush')
               .call(brush);
-          gBrush.selectAll('rect')
-              .attr('height', availableHeight);
         }
         else {
           g.selectAll('.nv-brush').attr('display', 'inline');
+          gBrush = g.select('.nv-x.nv-brush').call(brush);
         }
+        gBrush.selectAll('rect')
+          .attr('height', availableHeight)
+          .on('mousemove', onMouseMove)
+          .on('mouseout', onMouseOut);
       }
 
       function disableBrush() {
@@ -337,9 +397,12 @@ nv.models.multiBarWithBrushChart = function() {
       // Setup Axes
 
       if (showXAxis) {
+          function tickSkip () {
+            return Math.ceil(minTickWidth / xAxis.rangeBand());
+          }
           xAxis
             .scale(x)
-            .ticks( availableWidth / 100 )
+            .tickValues(x.domain().filter(function(d, i) { return reduceXTicks && !(i % tickSkip()); }))
             .tickSize(-availableHeight, 0);
 
           g.select('.nv-x.nv-axis')
@@ -347,7 +410,7 @@ nv.models.multiBarWithBrushChart = function() {
           g.select('.nv-x.nv-axis').transition()
               .call(xAxis);
 
-          var xTicks = g.select('.nv-x.nv-axis > g').selectAll('g');
+          var xTicks = g.selectAll('.nv-x.nv-axis g.tick');
 
           xTicks
               .selectAll('line, text')
@@ -358,29 +421,30 @@ nv.models.multiBarWithBrushChart = function() {
                   return "translate(" + x + "," + y + ")";
               };
 
+              var rangeBand = x.rangeBand();
+
               var staggerUp = 5, staggerDown = 17;  //pixels to stagger by
               // Issue #140
               xTicks
                 .selectAll("text")
                 .attr('transform', function(d,i,j) {
+                    var self = d3v3.select(this),
+                      textLength = self.node().getComputedTextLength(),
+                      text = self.text();
+                    while (textLength > rangeBand && text.length > 0) {
+                      text = text.slice(0, -1);
+                      self.text(text + '...');
+                      textLength = self.node().getComputedTextLength();
+                    }
                     return  getTranslate(0, (j % 2 == 0 ? staggerUp : staggerDown));
                   });
 
-              var totalInBetweenTicks = d3.selectAll(".nv-x.nv-axis .nv-wrap g g text")[0].length;
+              var totalInBetweenTicks = d3v3.selectAll(".nv-x.nv-axis .nv-wrap g g text")[0].length;
               g.selectAll(".nv-x.nv-axis .nv-axisMaxMin text")
                 .attr("transform", function(d,i) {
                     return getTranslate(0, (i === 0 || totalInBetweenTicks % 2 !== 0) ? staggerDown : staggerUp);
                 });
           }
-
-          if (reduceXTicks)
-            xTicks
-              .filter(function(d,i) {
-                  return i % Math.ceil(data[0].values.length / (availableWidth / 100)) !== 0;
-                })
-              .selectAll('text, line')
-              .style('opacity', 0);
-
           if(rotateLabels)
             xTicks
               .selectAll('.tick text')
@@ -396,7 +460,7 @@ nv.models.multiBarWithBrushChart = function() {
           yAxis
             .scale(y)
             .ticks( availableHeight / 36 )
-            .tickSize( -availableWidth, 0);
+            .tickSize( -availableChartWidth, 0);
 
           g.select('.nv-y.nv-axis').transition()
               .call(yAxis);
@@ -414,6 +478,9 @@ nv.models.multiBarWithBrushChart = function() {
       legend.dispatch.on('stateChange', function(newState) {
         state = newState;
         dispatch.stateChange(state);
+        if (onLegendChange != null) {
+          onLegendChange(state);
+        }
         chart.update();
       });
 
@@ -440,6 +507,7 @@ nv.models.multiBarWithBrushChart = function() {
         }
 
         state.stacked = multibar.stacked();
+        state.selectionEnabled = selectionEnabled;
         if (onStateChange != null) {
           onStateChange(state);
         }
@@ -471,10 +539,13 @@ nv.models.multiBarWithBrushChart = function() {
       });
 
       //============================================================
+      function fGetNumericValue(o) {
+        return o instanceof Date ? o.getTime() : o;
+      };
 
 
       function onBrush(){
-        brushExtent = brush.empty() ? null : brush.extent();
+        chart.brushExtent = brush.empty() ? null : brush.extent();
         extent = brush.empty() ? x.domain() : brush.extent();
 
         dispatch.brush({extent: extent, brush: brush});
@@ -485,23 +556,178 @@ nv.models.multiBarWithBrushChart = function() {
       }
 
       function onBrushEnd(){
-        brushExtent = brush.empty() ? null : brush.extent();
-        extent = brush.empty() ? x.domain() : brush.extent();
+        extent = brush.empty() ? [d3v3.mouse(this)[0], d3v3.mouse(this)[0]] : brush.extent();
+        var _leftEdges = x.range();
+        var _width = x.rangeBand() + multibar.groupSpacing() * x.rangeBand();
+        var _l, _j;
+        for(_l=0; extent[0] > (_leftEdges[_l] + _width); _l++) {}
+        _l = x.domain()[_l] != undefined ? _l : 0;
+        var _from = x.domain()[_l];
 
+        for(_j=0; extent[1] > (_leftEdges[_j] + _width); _j++) {}
+        var _to = x.domain()[_j + 1] != undefined ? x.domain()[_j + 1]: filteredData[0].values[filteredData[0].values.length - 1].x_end;
+        var range  = [x.range()[_l], x.range()[_j + 1] != undefined ? x.range()[_j + 1] : x.range()[_j] + _width];
+        brush.extent(chart.brushExtent = range);
+        g.select('.nv-x.nv-brush').call(brush);
         if (onSelectRange != null){
-          var _leftEdges = x.range();
-          var _width = x.rangeBand();
-          var _j;
-          for(_j=0; extent[0] > (_leftEdges[_j] + _width); _j++) {}
-          var _from = typeof x.domain()[_j] != "undefined" ? x.domain()[_j] : x.domain()[0];
-
-          for(_j=0; extent[1] > (_leftEdges[_j] + _width); _j++) {}
-          var _to = typeof x.domain()[_j] != "undefined" ? x.domain()[_j] : x.domain()[x.domain().length-1];
-
-          onSelectRange(_from, _to);
+          if (_from > _to) {
+            onSelectRange(_to, _from);
+          } else {
+            onSelectRange(_from, _to);
+          }
+        }
+      }
+      function getElByMouse (coords, filterSeries) {
+        var extent = coords || d3v3.mouse(this)[0];
+        var _l, _j;
+        var _width = x.rangeBand();
+        var _leftEdges = x.range();
+        for(_l=0; extent >= _leftEdges[_l]; _l++) {}
+        _l = Math.max(_l - 1, 0);
+        var value = fGetNumericValue(x.domain()[_l]);
+        var values = [];
+        if (!filterSeries || multibar.stacked()) {
+          var j;
+          for (j = 0; j < filteredData.length; j++) {
+            for (i = 0; i < filteredData[j].values.length; i++) {
+              if (fGetNumericValue(getX(filteredData[j].values[i])) == value) {
+                values.push(filteredData[j].values[i]);
+              }
+            }
+          }
+        } else {
+          var serieIndex = Math.floor(Math.min(extent - _leftEdges[_l], _width - 0.001) / (_width / filteredData.length)); // Math.min(extent - _leftEdges[_l], _width - 0.001) to handle the padding at the end. Would it make sense to remove the padding?
+          var i;
+          if (serieIndex < 0) return null;
+          for (i = 0; i < filteredData[serieIndex].values.length; i++) {
+            if (fGetNumericValue(getX(filteredData[serieIndex].values[i])) == value) {
+              values.push(filteredData[serieIndex].values[i]);
+              break;
+            }
+          }
+        }
+        return values;
+      }
+      function fromSelection (selection) {
+        var _width = x.rangeBand() + multibar.groupSpacing() * x.rangeBand();
+        var _leftEdges = x.domain();
+        if (!_leftEdges.length) {
+          return null;
+        }
+        var _l, _j;
+        var isDescending = _leftEdges[0] < _leftEdges[1];
+        if (!isDescending) {
+          selection = [Math.max(selection[0], selection[1]), Math.min(selection[0], selection[1])]
+        }
+        if (isDescending) {
+          for(_l= 0; selection[0] >= _leftEdges[_l]; _l++) {}
+        } else {
+          for(_l= _leftEdges.length - 1; selection[0] > _leftEdges[_l]; _l--) {}
         }
 
-        gEnter.select(".nv-brush").select(".extent").style("display", "none");
+        _l = x.range()[_l + (isDescending ? -1 : 0)] != undefined ? _l + (isDescending ? -1 : 0) : isDescending ? _leftEdges.length - 1 : 0;
+        var _fromRange = x.range()[_l] != undefined ? x.range()[_l] : 0;
+
+        if (isDescending) {
+          for(_j = 0; selection[1] > _leftEdges[_j]; _j++) {}
+        } else {
+          for(_j = _leftEdges.length - 1; selection[1] > _leftEdges[_j]; _j--) {}
+        }
+        var _toRange = x.range()[_j] != undefined ? x.range()[_j] : x.range()[_leftEdges.length - 1] + _width;
+        return {
+          range: [_fromRange, _fromRange === _toRange ? _fromRange + x.rangeBand() : _toRange]
+        };
+      }
+      function onMouseMove () {
+        var el = getElByMouse.call(this);
+        // If we're mousing over a rectangle that doesn't have class hover, set class and dispatch mouseover
+        var target = container.selectAll('g.nv-wrap.nv-multiBarWithLegend rect:not(.hover)').filter(function(rect) {
+          return el && el.some(function(d) {
+            return fGetNumericValue(getX(rect)) === fGetNumericValue(getX(d)) && d.series === rect.series;
+          });
+        });
+        // If there's rectangle with the hover class that are not the target, remove the class and dispatch mouseout
+        var others = container.selectAll('g.nv-wrap.nv-multiBarWithLegend rect.hover').filter(function(rect) {
+          return !el || !el.some(function(d) {
+            return fGetNumericValue(getX(rect)) === fGetNumericValue(getX(d)) && d.series === rect.series;
+          });
+        })
+        if (others.size()) {
+          others.classed('hover', false)
+          .each(function (d, i) {
+            multibar.dispatch.elementMouseout({
+              value: getY(d,i),
+              point: d,
+              series: data[d.series],
+              pointIndex: i,
+              seriesIndex: d.series,
+              e: d3v3.event
+            });
+          });
+        }
+        if (target.size()) {
+          var e = d3v3.event; // Keep reference to event for setTimeout
+          setTimeout(function(){ // Delayed to conteract conflict with elementMouseout.
+            target.classed('hover', true);
+            var max, maxi;
+            target.each(function (d, i) {
+              if (isNaN(max) || max < getY(d)) {
+                max = getY(d);
+                maxi = i;
+              }
+            });
+            d3v3.select(target[0][maxi])
+            .each(function(d, i){
+              multibar.dispatch.elementMouseover({
+                value: getY(d),
+                point: d,
+                series: filteredData[d.series],
+                pos: [x(getX(d)) + (x.rangeBand() * (multibar.stacked() ? data.length / 2 : d.series + .5) / data.length), y(getY(d) + (multibar.stacked() ? d.y0 : 0))],  // TODO: Figure out why the value appears to be shifted
+                pointIndex: i,
+                seriesIndex: d.series,
+                list: el.map(function (d) {
+                  return {
+                    value: getY(d),
+                    point: d,
+                    series: data[d.series],
+                    pos: [x(getX(d)) + (x.rangeBand() * (multibar.stacked() ? data.length / 2 : d.series + .5) / data.length), y(getY(d) + (multibar.stacked() ? d.y0 : 0))],  // TODO: Figure out why the value appears to be shifted
+                    pointIndex: -1,
+                    seriesIndex: d.series,
+                  };
+                }),
+                e: e
+              });
+            });
+          },0);
+        }
+      }
+      function onMouseOut () {
+        var others = container.selectAll('g.nv-wrap.nv-multiBarWithLegend rect.hover')
+        if (others.size()) {
+           others.classed('hover', false)
+          .each(function (d, i) {
+            multibar.dispatch.elementMouseout({
+              value: getY(d,i),
+              point: d,
+              series: data[d.series],
+              pointIndex: i,
+              seriesIndex: d.series,
+              e: d3v3.event
+            });
+          });
+        }
+      }
+      function onClick () {
+        var el = getElByMouse.call(this);
+        var d = el[0];
+        multibar.dispatch.elementClick({
+          value: getY(d),
+          point: d,
+          series: data[d.series],
+          pointIndex: d.index,
+          seriesIndex: d.series,
+          e: d3v3.event
+        });
       }
     });
 
@@ -538,9 +764,10 @@ nv.models.multiBarWithBrushChart = function() {
   chart.legend = legend;
   chart.xAxis = xAxis;
   chart.yAxis = yAxis;
+  chart.xScale = multibar.xScale;
   chart.LABELS = LABELS;
 
-  d3.rebind(chart, multibar, 'x', 'y', 'xDomain', 'yDomain', 'xRange', 'yRange', 'forceX', 'forceY', 'clipEdge',
+  d3v3.rebind(chart, multibar, 'x', 'y', 'xDomain', 'yDomain', 'xRange', 'yRange', 'forceX', 'forceY', 'clipEdge',
    'id', 'stacked', 'stackOffset', 'delay', 'barColor','groupSpacing');
 
   chart.options = nv.utils.optionsFunc.bind(chart);
@@ -674,11 +901,27 @@ nv.models.multiBarWithBrushChart = function() {
     return chart;
   };
 
+  chart.isSelectionEnabled = function() {
+    return selectionEnabled;
+  };
+
   chart.hideSelection = function() {
     selectionHidden = true;
-    selectionEnabled = false;
     return chart;
-  }
+  };
+
+  chart.showSelection = function() {
+    selectionHidden = false;
+    return chart;
+  };
+
+  chart.showStacked = function() {
+    stackedHidden = false;
+  };
+
+  chart.hideStacked = function() {
+    stackedHidden = true;
+  };
 
   chart.onSelectRange = function(_) {
     if (!arguments.length) return onSelectRange;
@@ -692,14 +935,31 @@ nv.models.multiBarWithBrushChart = function() {
     return chart;
   };
 
+  chart.onLegendChange = function(_) {
+    if (!arguments.length) return onLegendChange;
+    onLegendChange = _;
+    return chart;
+  };
+
   chart.onChartUpdate = function(_) {
     if (!arguments.length) return onChartUpdate;
     onChartUpdate = _;
     return chart;
   };
 
+  chart.minTickWidth = function() {
+    if (!arguments.length) return minTickWidth;
+    minTickWidth = _;
+    return chart;
+  };
+
   chart.selectBars = function(args) {
     if (!arguments.length) return selectBars;
+    if (args && args.rangeValues) {
+      chart.brushDomain = [args.rangeValues[0].from, args.rangeValues[0].to];
+    } else {
+      chart.brushDomain = null;
+    }
     if (selectBars) {
       selectBars(args);
     }

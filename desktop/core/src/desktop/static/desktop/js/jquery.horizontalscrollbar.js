@@ -33,46 +33,70 @@
 
   function initWhenReady(el) {
     if ($(el).parents('.dataTables_wrapper').length > 0) {
-      var scrollingRatio = function () {
-        return $(el).parents('.dataTables_wrapper').width() - $(el).parents('.dataTables_wrapper').find('hue-scrollbar-x').width()
-      };
+      var colWidth = $(el).find('thead tr th').outerWidth();
       if ($(el).parents('.dataTables_wrapper').find('.hue-scrollbar-x-rail').length == 0 && $(el).parents('.dataTables_wrapper').width() < $(el).parents('.dataTables_wrapper')[0].scrollWidth) {
-        var colWidth = $(el).parents('.dataTables_wrapper').find('.jHueTableExtenderClonedContainerColumn').width() + 5;
+        $('.hue-scrollbar-x-rail').remove();
         var scrollbarRail = $('<div>');
         var scrollbar = $('<div>').addClass('hue-scrollbar-x');
         scrollbar.width(Math.max(20, $(el).parents('.dataTables_wrapper').width() * ($(el).parents('.dataTables_wrapper').width() / $(el).parents('.dataTables_wrapper')[0].scrollWidth)));
         scrollbar.appendTo(scrollbarRail);
+        try {
+          scrollbar.draggable('destroy');
+        }
+        catch (e) {}
+        var throttleScrollTimeout = -1;
         scrollbar.draggable({
           axis: 'x',
           containment: 'parent',
           drag: function (e, ui) {
             $(el).parents('.dataTables_wrapper').scrollLeft(($(el).parents('.dataTables_wrapper')[0].scrollWidth - $(el).parents('.dataTables_wrapper').width()) * (ui.position.left / (scrollbarRail.width() - $(this).width())))
+            throttleScrollTimeout = window.setTimeout(function () {
+              $(el).parents('.dataTables_wrapper').trigger('scroll');
+            }, 50);
           }
         });
-        $(el).parents('.dataTables_wrapper').bind('mousewheel DOMMouseScroll wheel', function (e) {
-          var _e = e.originalEvent,
-              _deltaX = _e.wheelDeltaX || -_e.deltaX,
-              _deltaY = _e.wheelDeltaY || -_e.deltaY;
-          if (Math.abs(_deltaX) > Math.abs(_deltaY)) {
-            this.scrollLeft += -_deltaX / 2;
+        $(el).parents('.dataTables_wrapper').bind('mousewheel', function (e) {
+          var _deltaX = e.deltaX*e.deltaFactor,
+              _deltaY = e.deltaY;
+
+          if (Math.abs(_deltaX) >= Math.abs(_deltaY)) {
+            var self = this;
+            self.scrollLeft += _deltaX;
+            e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
-            scrollbar.css("left", ((scrollbarRail.width() - scrollbar.width()) * ($(el).parents('.dataTables_wrapper').scrollLeft() / ($(el).parents('.dataTables_wrapper')[0].scrollWidth - $(el).parents('.dataTables_wrapper').width()))) + "px");
-            e.preventDefault();
+            if (self.scrollLeft > 0){
+              scrollbar.css("left", ((scrollbarRail[0].getBoundingClientRect().width - scrollbar[0].getBoundingClientRect().width) * (self.scrollLeft / (self.scrollWidth - self.getBoundingClientRect().width))) + "px");
+              window.clearTimeout(throttleScrollTimeout);
+              throttleScrollTimeout = window.setTimeout(function () {
+                $(el).parents('.dataTables_wrapper').trigger('scroll');
+              }, 50);
+            }
           }
         });
         scrollbarRail.addClass('hue-scrollbar-x-rail').appendTo($(el).parents(".dataTables_wrapper"));
         scrollbarRail.width($(el).parents(".dataTables_wrapper").width() - colWidth);
         scrollbarRail.css("marginLeft", (colWidth) + "px");
+        if (scrollbarRail.position().top > $(window).height() - 10) {
+          scrollbarRail.css('bottom', '0');
+        }
         $(el).parents('.dataTables_wrapper').bind('scroll_update', function () {
           scrollbar.css("left", ((scrollbarRail.width() - scrollbar.width()) * ($(el).parents('.dataTables_wrapper').scrollLeft() / ($(el).parents('.dataTables_wrapper')[0].scrollWidth - $(el).parents('.dataTables_wrapper').width()))) + "px");
         });
       } else {
-        var colWidth = $(el).parents('.dataTables_wrapper').find('.jHueTableExtenderClonedContainerColumn').width() + 5;
+        if ($(el).parents('.dataTables_wrapper').width() === $(el).parents('.dataTables_wrapper')[0].scrollWidth) {
+          $('.hue-scrollbar-x-rail').hide();
+        }
+        else {
+          $('.hue-scrollbar-x-rail').show();
+        }
         $(el).parents('.dataTables_wrapper').find('.hue-scrollbar-x-rail').width($(el).parents(".dataTables_wrapper").width() - colWidth);
-        var scrollbarRail = $(el).parents('.dataTables_wrapper').find('.hue-scrollbar-x-rail');
         var scrollbar = $(el).parents('.dataTables_wrapper').find('.hue-scrollbar-x');
         scrollbar.width(Math.max(20, $(el).parents('.dataTables_wrapper').width() * ($(el).parents('.dataTables_wrapper').width() / $(el).parents('.dataTables_wrapper')[0].scrollWidth)));
+
+        var scrollbarRail = $(el).parents('.dataTables_wrapper').find('.hue-scrollbar-x-rail');
+        scrollbarRail.width($(el).parents(".dataTables_wrapper").width() - colWidth);
+        scrollbarRail.css("marginLeft", (colWidth) + "px");
         scrollbar.css("left", ((scrollbarRail.width() - scrollbar.width()) * ($(el).parents('.dataTables_wrapper').scrollLeft() / ($(el).parents('.dataTables_wrapper')[0].scrollWidth - $(el).parents('.dataTables_wrapper').width()))) + "px");
       }
     }

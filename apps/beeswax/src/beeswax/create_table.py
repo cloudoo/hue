@@ -22,18 +22,17 @@ import json
 import logging
 import re
 
-from django.core.urlresolvers import reverse
-from django.forms.util import ErrorDict
+from django.urls import reverse
 from django.http import QueryDict
 from django.utils.translation import ugettext as _
 
+from aws.s3.s3fs import S3FileSystemException
 from desktop.context_processors import get_app_name
 from desktop.lib import django_mako, i18n
 from desktop.lib.django_util import render
 from desktop.lib.exceptions_renderable import PopupException
 from desktop.lib.django_forms import MultiForm
 from hadoop.fs import hadoopfs
-from hadoop.fs.fsutils import remove_header
 
 from beeswax.common import TERMINATORS
 from beeswax.design import hql_query
@@ -104,7 +103,7 @@ DELIMITER_READABLE = {'\\001' : _('ctrl-As'),
                       '\\t'   : _('tabs'),
                       ','     : _('commas'),
                       ' '     : _('spaces')}
-FILE_READERS = [ ]
+FILE_READERS = []
 
 def import_wizard(request, database='default'):
   """
@@ -168,10 +167,23 @@ def import_wizard(request, database='default'):
           # Go back to define columns
           do_s3_column_def, do_hive_create = True, False
 
+      load_data = s1_file_form.cleaned_data.get('load_data', 'IMPORT').upper()
+      path = s1_file_form.cleaned_data['path']
+
       #
       # Go to step 2: We've just picked the file. Preview it.
       #
       if do_s2_auto_delim:
+        try:
+          if load_data == 'IMPORT':
+            if not request.fs.isfile(path):
+              raise PopupException(_('Path location must refer to a file if "Import Data" is selected.'))
+          elif load_data == 'EXTERNAL':
+            if not request.fs.isdir(path):
+              raise PopupException(_('Path location must refer to a directory if "Create External Table" is selected.'))
+        except (IOError, S3FileSystemException), e:
+          raise PopupException(_('Path location "%s" is invalid: %s') % (path, e))
+
         delim_is_auto = True
         fields_list, n_cols, s2_delim_form = _delim_preview(request.fs, s1_file_form, encoding, [reader.TYPE for reader in FILE_READERS], DELIMITERS)
 
@@ -231,13 +243,17 @@ def import_wizard(request, database='default'):
       if do_hive_create:
         delim = s2_delim_form.cleaned_data['delimiter']
         table_name = s1_file_form.cleaned_data['name']
+
         proposed_query = django_mako.render_to_string("create_table_statement.mako", {
             'table': {
                 'name': table_name,
                 'comment': s1_file_form.cleaned_data['comment'],
                 'row_format': 'Delimited',
                 'field_terminator': delim,
-                'file_format': 'TextFile'
+                'file_format': 'TextFile',
+                'load_data': load_data,
+                'path': path,
+                'skip_header': request.GET.get('removeHeader', 'off').lower() == 'on'
              },
             'columns': [ f.cleaned_data for f in s3_col_formset.forms ],
             'partition_columns': [],
@@ -245,11 +261,8 @@ def import_wizard(request, database='default'):
             'databases': databases
           }
         )
-
-        do_load_data = s1_file_form.cleaned_data.get('do_import')
-        path = s1_file_form.cleaned_data['path']
         try:
-          return _submit_create_and_load(request, proposed_query, table_name, path, do_load_data, database=database)
+          return _submit_create_and_load(request, proposed_query, table_name, path, load_data, database=database)
         except QueryServerException, e:
           raise PopupException(_('The table could not be created.'), detail=e.message)
   else:
@@ -263,17 +276,16 @@ def import_wizard(request, database='default'):
   })
 
 
-def _submit_create_and_load(request, create_hql, table_name, path, do_load, database):
+def _submit_create_and_load(request, create_hql, table_name, path, load_data, database):
   """
-  Submit the table creation, and setup the load to happen (if ``do_load``).
+  Submit the table creation, and setup the load to happen (if ``load_data`` == IMPORT).
   """
   on_success_params = QueryDict('', mutable=True)
   app_name = get_app_name(request)
 
-  if do_load:
+  if load_data == 'IMPORT':
     on_success_params['table'] = table_name
     on_success_params['path'] = path
-    on_success_params['removeHeader'] = request.POST.get('removeHeader')
     on_success_url = reverse(app_name + ':load_after_create', kwargs={'database': database}) + '?' + on_success_params.urlencode()
   else:
     on_success_url = reverse('metastore:describe_table', kwargs={'database': database, 'table': table_name})
@@ -296,6 +308,11 @@ def _delim_preview(fs, file_form, encoding, file_types, delimiters):
 
   path = file_form.cleaned_data['path']
   try:
+    # If path is a directory, find first file object
+    if fs.isdir(path):
+      children = fs.listdir(path)
+      if children:
+        path = '%s/%s' % (path, children[0])
     file_obj = fs.open(path)
     delim, file_type, fields_list = _parse_fields(path, file_obj, encoding, file_types, delimiters)
     file_obj.close()
@@ -324,8 +341,7 @@ def _delim_preview(fs, file_form, encoding, file_types, delimiters):
 
 def _parse_fields(path, file_obj, encoding, filetypes, delimiters):
   """
-  _parse_fields(path, file_obj, encoding, filetypes, delimiters)
-                                  -> (delimiter, filetype, fields_list)
+  _parse_fields(path, file_obj, encoding, filetypes, delimiters) -> (delimiter, filetype, fields_list)
 
   Go through the list of ``filetypes`` (gzip, text) and stop at the first one
   that works for the data. Then apply the list of ``delimiters`` and pick the
@@ -334,7 +350,7 @@ def _parse_fields(path, file_obj, encoding, filetypes, delimiters):
 
   Return the best delimiter, filetype and the data broken down into rows of fields.
   """
-  file_readers = [ reader for reader in FILE_READERS if reader.TYPE in filetypes ]
+  file_readers = [reader for reader in FILE_READERS if reader.TYPE in filetypes]
 
   for reader in file_readers:
     LOG.debug("Trying %s for file: %s" % (reader.TYPE, path))
@@ -365,7 +381,7 @@ def _readfields(lines, delimiters):
     The score is always non-negative. The higher the better.
     """
     n_lines = len(fields_list)
-    len_list = [ len(fields) for fields in fields_list ]
+    len_list = [len(fields) for fields in fields_list]
 
     if not len_list:
       raise PopupException(_("Could not find any columns to import"))
@@ -377,7 +393,7 @@ def _readfields(lines, delimiters):
     avg_n_fields = sum(len_list) / n_lines
     sq_of_exp = avg_n_fields * avg_n_fields
 
-    len_list_sq = [ l * l for l in len_list ]
+    len_list_sq = [l * l for l in len_list]
     exp_of_sq = sum(len_list_sq) / n_lines
     var = exp_of_sq - sq_of_exp
     # Favour more fields
@@ -466,20 +482,13 @@ def load_after_create(request, database):
   We get here from the create's on_success_url, and expect to find
   ``table`` and ``path`` from the parameters.
   """
-  tablename = request.REQUEST.get('table')
-  path = request.REQUEST.get('path')
-  is_remove_header = request.REQUEST.get('removeHeader').lower() == 'on' and not path.endswith('gz')
+  tablename = request.GET.get('table')
+  path = request.GET.get('path')
 
   if not tablename or not path:
     msg = _('Internal error: Missing needed parameter to load data into table.')
     LOG.error(msg)
     raise PopupException(msg)
-
-  if is_remove_header:
-    try:
-      remove_header(request.fs, path)
-    except Exception, e:
-      raise PopupException(_("The headers of the file could not be removed."), detail=e)
 
   LOG.debug("Auto loading data from %s into table %s" % (path, tablename))
   hql = "LOAD DATA INPATH '%s' INTO TABLE `%s.%s`" % (path, database, tablename)

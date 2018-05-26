@@ -16,8 +16,11 @@
 
 import logging
 import posixpath
+import time
 
 from desktop.lib.i18n import smart_unicode
+from desktop.lib.apputil import WARN_LEVEL_CALL_DURATION_MS, INFO_LEVEL_CALL_DURATION_MS
+
 
 LOG = logging.getLogger(__name__)
 
@@ -63,12 +66,26 @@ class Resource(object):
     else:
       return resp.content
 
-  def invoke(self, method, relpath=None, params=None, data=None, headers=None, files=None, allow_redirects=False):
+  def invoke(self, method, relpath=None, params=None, data=None, headers=None, files=None, allow_redirects=False, clear_cookies=False, log_response=True):
+    resp = self._invoke(method=method,
+                        relpath=relpath,
+                        params=params,
+                        data=data,
+                        headers=headers,
+                        files=files,
+                        allow_redirects=allow_redirects,
+                        clear_cookies=clear_cookies,
+                        log_response=log_response)
+
+    return self._format_response(resp)
+
+  def _invoke(self, method, relpath=None, params=None, data=None, headers=None, files=None, allow_redirects=False, clear_cookies=False, log_response=True):
     """
     Invoke an API method.
     @return: Raw body or JSON dictionary (if response content type is JSON).
     """
     path = self._join_uri(relpath)
+    start_time = time.time()
     resp = self._client.execute(method,
                                 path,
                                 params=params,
@@ -76,41 +93,50 @@ class Resource(object):
                                 headers=headers,
                                 files=files,
                                 allow_redirects=allow_redirects,
-                                urlencode=self._urlencode)
+                                urlencode=self._urlencode,
+                                clear_cookies=clear_cookies)
 
-    if self._client.logger.isEnabledFor(logging.DEBUG):
-      self._client.logger.debug(
-          "%s Got response: %s%s" %
-          (method,
-           smart_unicode(resp.content[:1000], errors='replace'),
-           len(resp.content) > 1000 and "..." or ""))
+    if log_response:
+      duration = time.time() - start_time
+      message = "%s %s Got response%s: %s%s" % (
+          method,
+          smart_unicode(path, errors='ignore'),
+          ' in %dms' % (duration * 1000),
+          smart_unicode(resp.content[:1000], errors='replace'),
+          len(resp.content) > 1000 and "..." or ""
+      )
+      log_if_slow_call(duration=duration, message=message, logger=self._client.logger)
 
-    return self._format_response(resp)
+    return resp
 
-  def get(self, relpath=None, params=None, headers=None):
+
+  def get(self, relpath=None, params=None, headers=None, clear_cookies=False):
     """
     Invoke the GET method on a resource.
     @param relpath: Optional. A relative path to this resource's path.
     @param params: Key-value data.
+    @param clear_cookies: Optional. A flag to force any session cookies to be reset on the request.
 
     @return: A dictionary of the JSON result.
     """
-    return self.invoke("GET", relpath, params, headers=headers, allow_redirects=True)
+    return self.invoke("GET", relpath, params, headers=headers, allow_redirects=True, clear_cookies=clear_cookies)
 
 
-  def delete(self, relpath=None, params=None, headers=None):
+  def delete(self, relpath=None, params=None, headers=None, clear_cookies=False):
     """
     Invoke the DELETE method on a resource.
     @param relpath: Optional. A relative path to this resource's path.
     @param params: Key-value data.
     @param headers: Optional. Base set of headers.
+    @param clear_cookies: Optional. A flag to force any session cookies to be reset on the request.
 
     @return: A dictionary of the JSON result.
     """
-    return self.invoke("DELETE", relpath, params, headers=headers)
+    return self.invoke("DELETE", relpath, params, headers=headers, clear_cookies=clear_cookies)
 
 
-  def post(self, relpath=None, params=None, data=None, contenttype=None, headers=None, files=None, allow_redirects=False):
+  def post(self, relpath=None, params=None, data=None, contenttype=None, headers=None, files=None, allow_redirects=False,
+           clear_cookies=False, log_response=True):
     """
     Invoke the POST method on a resource.
     @param relpath: Optional. A relative path to this resource's path.
@@ -119,13 +145,15 @@ class Resource(object):
     @param contenttype: Optional.
     @param headers: Optional. Base set of headers.
     @param allow_redirects: Optional. Allow request to automatically resolve redirects.
+    @param clear_cookies: Optional. A flag to force any session cookies to be reset on the request.
 
     @return: A dictionary of the JSON result.
     """
-    return self.invoke("POST", relpath, params, data, self._make_headers(contenttype, headers), files, allow_redirects)
+    return self.invoke("POST", relpath, params, data, headers=self._make_headers(contenttype, headers), files=files,
+                       allow_redirects=allow_redirects, clear_cookies=clear_cookies, log_response=log_response)
 
 
-  def put(self, relpath=None, params=None, data=None, contenttype=None, allow_redirects=False):
+  def put(self, relpath=None, params=None, data=None, contenttype=None, allow_redirects=False, clear_cookies=False, headers=None):
     """
     Invoke the PUT method on a resource.
     @param relpath: Optional. A relative path to this resource's path.
@@ -133,10 +161,12 @@ class Resource(object):
     @param data: Optional. Body of the request.
     @param contenttype: Optional.
     @param allow_redirects: Optional. Allow request to automatically resolve redirects.
+    @param clear_cookies: Optional. A flag to force any session cookies to be reset on the request.
 
     @return: A dictionary of the JSON result.
     """
-    return self.invoke("PUT", relpath, params, data, self._make_headers(contenttype), allow_redirects)
+    return self.invoke("PUT", relpath, params, data, headers=self._make_headers(contenttype, headers),
+                       allow_redirects=allow_redirects, clear_cookies=clear_cookies)
 
 
   def _make_headers(self, contenttype=None, headers=None):
@@ -147,3 +177,26 @@ class Resource(object):
       headers.update({'Content-Type': contenttype})
 
     return headers
+
+  def resolve_redirect_url(self, method="GET", relpath=None, params=None, data=None, headers=None, files=None, allow_redirects=True, clear_cookies=False, log_response=True):
+    resp = self._invoke(method=method,
+                        relpath=relpath,
+                        params=params,
+                        data=data,
+                        headers=headers,
+                        files=files,
+                        allow_redirects=allow_redirects,
+                        clear_cookies=clear_cookies,
+                        log_response=log_response)
+
+    return resp.url.encode("utf-8")
+
+
+# Same in thrift_util.py for not losing the trace class
+def log_if_slow_call(duration, message, logger):
+  if duration >= WARN_LEVEL_CALL_DURATION_MS / 1000:
+    logger.warn('SLOW: %.2f - %s' % (duration, message))
+  elif duration >= INFO_LEVEL_CALL_DURATION_MS / 1000:
+    logger.info('SLOW: %.2f - %s' % (duration, message))
+  else:
+    logger.debug(message)

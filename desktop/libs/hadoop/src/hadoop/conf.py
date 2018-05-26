@@ -20,8 +20,10 @@ import logging
 import os
 
 from django.utils.translation import ugettext_lazy as _t
+
 from desktop.lib.conf import Config, UnspecifiedConfigSection, ConfigSection, coerce_bool
 from desktop.conf import default_ssl_validate
+
 
 LOG = logging.getLogger(__name__)
 DEFAULT_NN_HTTP_PORT = 50070
@@ -42,6 +44,7 @@ def find_file_recursive(desired_glob, root):
 
   f.__doc__ = "Finds %s/%s" % (root, desired_glob)
   return f
+
 
 
 UPLOAD_CHUNK_SIZE = Config(
@@ -87,6 +90,7 @@ HDFS_CLUSTERS = UnspecifiedConfigSection(
   )
 )
 
+# Deprecated and not used.
 MR_CLUSTERS = UnspecifiedConfigSection(
   "mapred_clusters",
   help="One entry for each MapReduce cluster",
@@ -164,7 +168,6 @@ def config_validator(user):
 
   Called by core check_config() view.
   """
-  from hadoop import job_tracker
   from hadoop.fs import webhdfs
 
   res = []
@@ -179,17 +182,6 @@ def config_validator(user):
       has_default = True
   if not has_default:
     res.append(("hadoop.hdfs_clusters", "You should have an HDFS called 'default'."))
-
-  # MR_CLUSTERS
-  mr_down = []
-  for name in MR_CLUSTERS.keys():
-    cluster = MR_CLUSTERS[name]
-    if cluster.SUBMIT_TO.get():
-      mr_down.extend(job_tracker.test_jt_configuration(cluster))
-      submit_to.append('mapred_clusters.' + name)
-  # If HA still failing
-  if mr_down and len(mr_down) == len(MR_CLUSTERS.keys()):
-    res.extend(mr_down)
 
   # YARN_CLUSTERS
   if YARN_CLUSTERS.keys():

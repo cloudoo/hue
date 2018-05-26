@@ -32,7 +32,7 @@ from hbase.conf import HBASE_CONF_DIR
 from hbase.hbase_site import get_server_authentication, get_server_principal, get_conf, reset, _CNF_HBASE_IMPERSONATION_ENABLED, is_impersonation_enabled
 from hadoop.pseudo_hdfs4 import is_live_cluster
 from nose.plugins.skip import SkipTest
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 
 def test_security_plain():
@@ -185,7 +185,7 @@ class TestIntegrationWithHBase:
     if not is_live_cluster():
       raise SkipTest('HUE-2910: Skipping because test is not reentrant')
 
-    resp = self.client.post('/hbase/api/getTableList/Cluster')
-    content = json.loads(resp.content)
-
-    assert_true('data' in content, content)
+    for cluster in HbaseApi(self.user).getClusters():
+      resp = self.client.post('/hbase/api/getTableList/' + cluster['name'])
+      content = json.loads(resp.content)
+      assert_true('data' in content, content)

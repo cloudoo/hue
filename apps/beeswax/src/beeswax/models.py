@@ -22,8 +22,8 @@ import json
 
 from django.db import models
 from django.contrib.auth.models import User
-from django.contrib.contenttypes import generic
-from django.core.urlresolvers import reverse
+from django.contrib.contenttypes.fields import GenericRelation
+from django.urls import reverse
 from django.utils.translation import ugettext as _, ugettext_lazy as _t
 
 from enum import Enum
@@ -49,12 +49,17 @@ BEESWAX = 'beeswax'
 HIVE_SERVER2 = 'hiveserver2'
 QUERY_TYPES = (HQL, IMPALA, RDBMS, SPARK) = range(4)
 
-
 class QueryHistory(models.Model):
   """
   Holds metadata about all queries that have been executed.
   """
-  STATE = Enum('submitted', 'running', 'available', 'failed', 'expired')
+  class STATE(Enum):
+    submitted = 0
+    running = 1
+    available = 2
+    failed = 3
+    expired = 4
+
   SERVER_TYPE = ((BEESWAX, 'Beeswax'), (HIVE_SERVER2, 'Hive Server 2'),
                  (librdbms_dbms.MYSQL, 'MySQL'), (librdbms_dbms.POSTGRESQL, 'PostgreSQL'),
                  (librdbms_dbms.SQLITE, 'sqlite'), (librdbms_dbms.ORACLE, 'oracle'))
@@ -149,28 +154,28 @@ class QueryHistory(models.Model):
       return is_statement_finished
 
   def is_running(self):
-    return self.last_state in (QueryHistory.STATE.running.index, QueryHistory.STATE.submitted.index)
+    return self.last_state in (QueryHistory.STATE.running.value, QueryHistory.STATE.submitted.value)
 
   def is_success(self):
-    return self.last_state in (QueryHistory.STATE.available.index,)
+    return self.last_state in (QueryHistory.STATE.available.value,)
 
   def is_failure(self):
-    return self.last_state in (QueryHistory.STATE.expired.index, QueryHistory.STATE.failed.index)
+    return self.last_state in (QueryHistory.STATE.expired.value, QueryHistory.STATE.failed.value)
 
   def is_expired(self):
-    return self.last_state in (QueryHistory.STATE.expired.index,)
+    return self.last_state in (QueryHistory.STATE.expired.value,)
 
   def set_to_running(self):
-    self.last_state = QueryHistory.STATE.running.index
+    self.last_state = QueryHistory.STATE.running.value
 
   def set_to_failed(self):
-    self.last_state = QueryHistory.STATE.failed.index
+    self.last_state = QueryHistory.STATE.failed.value
 
   def set_to_available(self):
-    self.last_state = QueryHistory.STATE.available.index
+    self.last_state = QueryHistory.STATE.available.value
 
   def set_to_expired(self):
-    self.last_state = QueryHistory.STATE.expired.index
+    self.last_state = QueryHistory.STATE.expired.value
 
   def save(self, *args, **kwargs):
     """
@@ -240,7 +245,7 @@ class HiveServerQueryHistory(QueryHistory):
                                  modified_row_count=self.modified_row_count)
 
   def save_state(self, new_state):
-    self.last_state = new_state.index
+    self.last_state = new_state.value
     self.save()
 
   @classmethod
@@ -275,7 +280,7 @@ class SavedQuery(models.Model):
 
   is_redacted = models.BooleanField(default=False)
 
-  doc = generic.GenericRelation(Document, related_name='hql_doc')
+  doc = GenericRelation(Document, related_query_name='hql_doc')
 
   class Meta:
     ordering = ['-mtime']
@@ -395,6 +400,12 @@ class SessionManager(models.Manager):
     except Session.DoesNotExist, e:
       return None
 
+  def get_n_sessions(self, user, n, application='beeswax', filter_open=True):
+    q = self.filter(owner=user, application=application).exclude(guid='').exclude(secret='')
+    if filter_open:
+      q = q.filter(status_code=0)
+    return q.order_by("-last_used")[0:n]
+
 
 class Session(models.Model):
   """
@@ -418,7 +429,7 @@ class Session(models.Model):
     return TSessionHandle(sessionId=handle_id)
 
   def get_properties(self):
-    return json.loads(self.properties)
+    return json.loads(self.properties) if self.properties else {}
 
   def get_formatted_properties(self):
     return [dict({'key': key, 'value': value}) for key, value in self.get_properties().items()]
@@ -428,7 +439,7 @@ class Session(models.Model):
 
 
 class QueryHandle(object):
-  def __init__(self, secret=None, guid=None, operation_type=None, has_result_set=None, modified_row_count=None, log_context=None):
+  def __init__(self, secret=None, guid=None, operation_type=None, has_result_set=None, modified_row_count=None, log_context=None, session_guid=None):
     self.secret = secret
     self.guid = guid
     self.operation_type = operation_type
@@ -449,10 +460,13 @@ class HiveServerQueryHandle(QueryHandle):
   QueryHandle for Hive Server 2.
 
   Store THandleIdentifier base64 encoded in order to be unicode compatible with Django.
+
+  Also store session handle if provided.
   """
   def __init__(self, **kwargs):
     super(HiveServerQueryHandle, self).__init__(**kwargs)
     self.secret, self.guid = self.get_encoded()
+    self.session_guid = kwargs.get('session_guid')
 
   def get(self):
     return self.secret, self.guid
@@ -500,7 +514,7 @@ class MetaInstall(models.Model):
   """
   Metadata about the installation. Should have at most one row.
   """
-  installed_example = models.BooleanField()
+  installed_example = models.BooleanField(default=False)
 
   @staticmethod
   def get():

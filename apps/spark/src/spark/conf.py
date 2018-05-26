@@ -28,46 +28,36 @@ from spark.settings import NICE_NAME
 LOG = logging.getLogger(__name__)
 
 
-LIVY_ASSEMBLY_JAR = Config(
-  key="livy_assembly_jar",
-  help=_t("Path to livy-assembly.jar"),
-  private=True,
-  default=os.path.join(os.path.dirname(__file__), "..", "..", "java-lib", "livy-assembly.jar"))
+# Livy
+LIVY_SERVER_URL = Config(
+  key="livy_server_url",
+  help=_t("The Livy Server URL."),
+  default="")
 
+# Deprecated
 LIVY_SERVER_HOST = Config(
   key="livy_server_host",
   help=_t("Host address of the Livy Server."),
   default="localhost")
 
+# Deprecated
 LIVY_SERVER_PORT = Config(
   key="livy_server_port",
   help=_t("Port of the Livy Server."),
   default="8998")
 
-LIVY_SERVER_SESSION_KIND = Config(
-  key="livy_server_session_kind",
-  help=_t("Configure livy to start in local 'process' mode, or 'yarn' workers."),
-  default="process")
+LIVY_SERVER_SESSION_KIND = Config( # Note: this one is ignored by Livy, this should match the current Spark mode
+   key="livy_server_session_kind",
+   help=_t("Configure livy to start in local 'process' mode, or 'yarn' workers."),
+   default="yarn")
 
-LIVY_YARN_JAR = Config(
-  key="livy_yarn_jar",
-  help=_t("Path to livy-assembly.jar inside HDFS"),
-  private=True)
-
-LIVY_IMPERSONATION_ENABLED = Config(
-  key="livy_impersonation_enabled",
-  help=_t("Use impersonation when submitting livy jobs"),
-  default=True,
+SECURITY_ENABLED = Config(
+  key="security_enabled",
+  help=_t("Whether Livy requires client to perform Kerberos authentication."),
+  default=False,
   type=coerce_bool)
 
-START_LIVY_SERVER = Config(
-  key="start_livy_server",
-  help=_t("Experimental option to launch livy"),
-  default=False,
-  type=coerce_bool,
-  private=True)
-
-
+# Spark SQL
 SQL_SERVER_HOST = Config(
   key="sql_server_host",
   help=_t("Host where SparkSQL server is running."),
@@ -81,7 +71,11 @@ SQL_SERVER_PORT = Config(
 
 
 def get_livy_server_url():
-  return 'http://%s:%s' % (LIVY_SERVER_HOST.get(), LIVY_SERVER_PORT.get())
+  url = LIVY_SERVER_URL.get()
+  if not url:
+    # backward compatibility
+    url = 'http://%s:%s' % (LIVY_SERVER_HOST.get(), LIVY_SERVER_PORT.get())
+  return url
 
 def get_spark_status(user):
   from spark.job_server_api import get_api

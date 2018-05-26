@@ -21,7 +21,7 @@
 
 <%namespace name="comps" file="jobbrowser_components.mako" />
 
-${ commonheader(_('Task View: Job: %(jobId)s') % dict(jobId=job.jobId_short), "jobbrowser", user) | n,unicode }
+${ commonheader(_('Task View: Job: %(jobId)s') % dict(jobId=job.jobId_short), "jobbrowser", user, request) | n,unicode }
 ${ comps.menubar() }
 
 <%def name="selected(val, state)">
@@ -81,7 +81,7 @@ ${ comps.menubar() }
           <tr>
             <td data-row-selector-exclude="true">
                 %if t.taskAttemptIds:
-                <a href="${ url('jobbrowser.views.single_task_attempt_logs', job=t.jobId, taskid=t.taskId, attemptid=t.taskAttemptIds[-1]) }" data-row-selector-exclude="true"><i class="fa fa-tasks"></i></a>
+                <a href="${ url('single_task_attempt_logs', job=t.jobId, taskid=t.taskId, attemptid=t.taskAttemptIds[-1]) }" data-row-selector-exclude="true"><i class="fa fa-tasks"></i></a>
                 %endif
             </td>
             <td>${t.taskId_short}</td>
@@ -109,7 +109,7 @@ ${ comps.menubar() }
 
 <script src="${ static('desktop/ext/js/datatables-paging-0.1.js') }" type="text/javascript" charset="utf-8"></script>
 
-<script type="text/javascript" charset="utf-8">
+<script type="text/javascript">
     $(document).ready(function(){
         $("#all_tasks").dataTable({
             "sPaginationType":"bootstrap",
